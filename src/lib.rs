@@ -22,12 +22,13 @@ pub mod data;
 pub mod training;
 pub mod utils;
 
-pub use core::{Activation, IdentityActivation, TanhActivation, BatchState, PCNError, PCNResult, State, PCN};
-pub use training::{Metrics, EpochMetrics, train_sample, train_batch, train_epoch};
+pub use core::{Activation, IdentityActivation, TanhActivation, PCNError, PCNResult, State, BatchState, PCN};
+pub use training::{BatchIterator, Metrics, TrainingConfig, train_batch, train_epoch, train_epochs};
 
-/// Training configuration for relaxation and weight updates.
+/// Legacy training configuration (kept for backward compatibility).
 ///
-/// Used across [`train_sample`], [`train_batch`], and [`train_epoch`] functions.
+/// Prefer [`TrainingConfig`](training::TrainingConfig) from the training module for new code.
+/// This struct provides the old single-sample interface.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub relax_steps: usize,

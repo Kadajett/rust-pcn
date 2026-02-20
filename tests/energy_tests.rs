@@ -8,7 +8,7 @@
 //! - Edge cases: zero inputs, single neurons, small networks
 
 use approx::assert_abs_diff_eq;
-use pcn::{State, PCN};
+use pcn::PCN;
 
 /// Test that a 2-layer network correctly computes prediction errors.
 ///
@@ -36,7 +36,7 @@ fn test_error_computation_2layer() {
     pcn.b[0] = ndarray::arr1(&[0.01, 0.02]);
 
     // Compute errors
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
 
     // Verify mu[0] = W[1] @ x[1] + b[0]
     // mu[0][0] = 0.1*0.5 + 0.2*(-0.5) + 0.3*1.0 + 0.01 = 0.05 - 0.1 + 0.3 + 0.01 = 0.26
@@ -71,7 +71,7 @@ fn test_error_computation_3layer() {
     pcn.b[0] = ndarray::arr1(&[0.01, 0.02]);
     pcn.b[1] = ndarray::arr1(&[0.1, 0.2, 0.3]);
 
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
 
     // Verify error computation happened for both layers
     // Layer 1: mu[1] = W[2] @ x[2] + b[1]
@@ -134,16 +134,16 @@ fn test_energy_decreases_during_relaxation() {
 
     // Compute initial energy
     let mut state_copy = state.clone();
-    pcn.compute_errors(&mut state_copy);
-    let mut prev_energy = pcn.compute_energy(&state_copy);
+    pcn.compute_errors(&mut state_copy).expect("compute_errors failed");
+    let prev_energy = pcn.compute_energy(&state_copy);
 
     // Relax for several steps with small alpha
     let alpha = 0.01;
     for step in 0..10 {
         state_copy = state.clone();
-        pcn.compute_errors(&mut state_copy);
-        pcn.relax_step(&mut state_copy, alpha);
-        let current_energy = pcn.compute_energy(&state_copy);
+        pcn.compute_errors(&mut state_copy).expect("compute_errors failed");
+        pcn.relax_step(&mut state_copy, alpha).expect("relax_step failed");
+        let _current_energy = pcn.compute_energy(&state_copy);
 
         // Energy should decrease or stay approximately the same
         // (due to discrete time steps, it might increase slightly, but over many steps should trend down)
@@ -154,7 +154,7 @@ fn test_energy_decreases_during_relaxation() {
     }
 
     // After multiple relaxation steps, compute final energy
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
     let final_energy = pcn.compute_energy(&state);
 
     // Energy should be lower than initial (on average)
@@ -201,7 +201,7 @@ fn test_single_neuron_network() {
     state.x[0] = ndarray::arr1(&[2.0]);
     state.x[1] = ndarray::arr1(&[1.0]);
 
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
 
     // mu[0] = 0.5 * 1.0 + 0.1 = 0.6
     assert_abs_diff_eq!(state.mu[0][0], 0.6, epsilon = 1e-6);
@@ -213,7 +213,7 @@ fn test_single_neuron_network() {
 #[test]
 fn test_zero_input_network() {
     let dims = vec![2, 3, 2];
-    let mut pcn = PCN::new(dims).expect("Failed to create PCN");
+    let pcn = PCN::new(dims).expect("Failed to create PCN");
     let mut state = pcn.init_state();
 
     // Zero input
@@ -221,7 +221,7 @@ fn test_zero_input_network() {
     state.x[1] = ndarray::arr1(&[0.1, 0.2, 0.3]);
     state.x[2] = ndarray::arr1(&[0.5, -0.5]);
 
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
 
     // mu[0] = W[1] @ x[1] + b[0]
     // Since b[0] is initialized to zero, mu[0] = W[1] @ x[1]
@@ -254,7 +254,7 @@ fn test_hebbian_weight_update() {
 
     // Update with eta = 0.01
     let eta = 0.01;
-    pcn.update_weights(&state, eta);
+    pcn.update_weights(&state, eta).expect("update_weights failed");
 
     // Verify weight update: w[1] += eta * (eps[0] ⊗ f(x[1]))
     // f(x[1]) = x[1] = [0.5, -0.5, 1.0] (identity activation)
@@ -354,7 +354,7 @@ fn test_shallow_2layer_network() {
     state.x[0] = ndarray::arr1(&[1.0, 2.0, 3.0]);
     state.x[1] = ndarray::arr1(&[0.5, -0.5]);
 
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
 
     // mu[0] should be computed
     assert_eq!(state.mu[0].len(), 3);
@@ -366,19 +366,19 @@ fn test_shallow_2layer_network() {
 #[test]
 fn test_error_recomputation() {
     let dims = vec![2, 2];
-    let mut pcn = PCN::new(dims).expect("Failed to create PCN");
+    let pcn = PCN::new(dims).expect("Failed to create PCN");
     let mut state = pcn.init_state();
 
     state.x[0] = ndarray::arr1(&[1.0, 0.0]);
     state.x[1] = ndarray::arr1(&[0.5, -0.5]);
 
     // First computation
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
     let first_errors = state.eps[0].clone();
 
     // Change state and recompute
     state.x[0] = ndarray::arr1(&[2.0, 0.0]);
-    pcn.compute_errors(&mut state);
+    pcn.compute_errors(&mut state).expect("compute_errors failed");
     let second_errors = state.eps[0].clone();
 
     // Errors should be different

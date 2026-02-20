@@ -195,7 +195,8 @@ impl PCN {
     /// Create a new PCN with the given layer dimensions.
     ///
     /// Initializes:
-    /// - Weights from U(-0.05, 0.05) for small random values
+    /// - Weights from Xavier/Glorot uniform initialization: U(-limit, limit)
+    ///   where limit = sqrt(6 / (fan_in + fan_out))
     /// - Biases to zero
     /// - Activation to identity (f(x) = x) for Phase 1
     ///
@@ -205,43 +206,16 @@ impl PCN {
     /// # Errors
     /// - `InvalidConfig` if dims is empty or has fewer than 2 layers
     pub fn new(dims: Vec<usize>) -> PCNResult<Self> {
-        if dims.len() < 2 {
-            return Err(PCNError::InvalidConfig(
-                "Must have at least 2 layers (input and output)".to_string(),
-            ));
-        }
-
-        let l_max = dims.len() - 1;
-        let mut w = Vec::with_capacity(l_max + 1);
-        w.push(Array2::zeros((0, 0))); // dummy at index 0
-
-        let mut b = Vec::with_capacity(l_max);
-
-        // Initialize weights from U(-0.05, 0.05) and biases to zero
-        for l in 1..=l_max {
-            let out_dim = dims[l - 1];
-            let in_dim = dims[l];
-
-            // Weights: U(-0.05, 0.05)
-            let dist = Uniform::new(-0.05f32, 0.05f32);
-            let wl = Array2::random((out_dim, in_dim), dist);
-            w.push(wl);
-
-            // Biases: zeros
-            b.push(Array1::zeros(out_dim));
-        }
-
-        let activation = Box::new(IdentityActivation);
-
-        Ok(Self {
-            dims,
-            w,
-            b,
-            activation,
-        })
+        Self::with_activation(dims, Box::new(IdentityActivation))
     }
 
     /// Create a new PCN with a custom activation function.
+    ///
+    /// Uses Xavier/Glorot uniform initialization for weights:
+    /// `W ~ U(-limit, limit)` where `limit = sqrt(6 / (fan_in + fan_out))`
+    ///
+    /// This ensures proper gradient flow at initialization, preventing the
+    /// vanishing-signal problem that occurs with overly small weights.
     pub fn with_activation(dims: Vec<usize>, activation: Box<dyn Activation>) -> PCNResult<Self> {
         if dims.len() < 2 {
             return Err(PCNError::InvalidConfig(
@@ -255,12 +229,18 @@ impl PCN {
 
         let mut b = Vec::with_capacity(l_max);
 
+        // Xavier/Glorot uniform initialization
         for l in 1..=l_max {
-            let out_dim = dims[l - 1];
-            let in_dim = dims[l];
-            let dist = Uniform::new(-0.05f32, 0.05f32);
+            let out_dim = dims[l - 1]; // fan_out
+            let in_dim = dims[l]; // fan_in
+
+            // Xavier uniform: limit = sqrt(6 / (fan_in + fan_out))
+            let limit = (6.0f32 / (in_dim + out_dim) as f32).sqrt();
+            let dist = Uniform::new(-limit, limit);
             let wl = Array2::random((out_dim, in_dim), dist);
             w.push(wl);
+
+            // Biases: zeros
             b.push(Array1::zeros(out_dim));
         }
 
@@ -277,7 +257,7 @@ impl PCN {
         &self.dims
     }
 
-    /// Initialize a state for inference or training.
+    /// Initialize a state for inference or training (all zeros).
     pub fn init_state(&self) -> State {
         let l_max = self.dims.len() - 1;
         State {
@@ -287,6 +267,35 @@ impl PCN {
             steps_taken: 0,
             final_energy: 0.0,
         }
+    }
+
+    /// Initialize a state with bottom-up propagation from input.
+    ///
+    /// Instead of starting all layers at zero (cold-start), this method
+    /// propagates the input upward through the weight transposes to give
+    /// each layer a reasonable starting point for relaxation.
+    ///
+    /// This dramatically speeds up inference convergence by avoiding the
+    /// cold-start problem where the output layer receives very weak
+    /// error signals through multiple layers.
+    ///
+    /// # Algorithm
+    /// For each layer ℓ from 1 to L:
+    /// ```text
+    /// x^ℓ = f(W[ℓ]^T x^{ℓ-1})
+    /// ```
+    pub fn init_state_from_input(&self, input: &Array1<f32>) -> State {
+        let mut state = self.init_state();
+        state.x[0] = input.clone();
+
+        // Bottom-up initialization using weight transposes
+        for l in 1..self.dims.len() {
+            // W[l] shape: (d_{l-1}, d_l), W[l]^T shape: (d_l, d_{l-1})
+            let projection = self.w[l].t().dot(&state.x[l - 1]);
+            state.x[l] = self.activation.apply(&projection);
+        }
+
+        state
     }
 
     /// Compute predictions and errors for the current state.
@@ -326,41 +335,38 @@ impl PCN {
     ///
     /// # Algorithm
     ///
-    /// For internal layers ℓ ∈ [1..L-1]:
+    /// For layers ℓ ∈ [1..L] (all non-input layers):
     /// ```text
-    /// x^ℓ += α * (-ε^ℓ + (W^{ℓ+1})^T ε^{ℓ-1} ⊙ f'(x^ℓ))
+    /// x^ℓ += α * (-ε^ℓ + W[l]^T ε[l-1] ⊙ f'(x^ℓ))
     /// ```
     ///
     /// **Interpretation:**
     /// - `-ε^ℓ` term: aligns neuron with its top-down prediction from layer above
-    /// - `(W^{ℓ+1})^T ε^{ℓ-1}` term: error feedback signal from layer below
+    /// - `W[l]^T ε[l-1]` term: error feedback signal from layer below
     /// - `⊙ f'(x^ℓ)`: modulate feedback by local gradient (gate non-linear layers)
     /// - **Result:** neuron finds compromise between predicting up and predicting down
     ///
     /// Updates `state.x` in place. Input layer (l=0) is not updated (assumed clamped).
+    /// Output layer (l=L) is updated; if it should be clamped during training,
+    /// the caller must re-clamp it after each step.
     ///
     /// # Arguments
     /// - `alpha`: relaxation learning rate (typically 0.01-0.1)
     pub fn relax_step(&self, state: &mut State, alpha: f32) -> PCNResult<()> {
         let l_max = self.dims.len() - 1;
 
-        // Update internal layers [1, L-1]. Input (0) and output (L) might be clamped.
-        for l in 1..l_max {
-            // Term 1: -eps[l]
+        // Update layers [1, L]. Input (0) is assumed clamped.
+        // For the top layer (l_max), eps[l_max] = 0 (no layer above predicts it),
+        // so the update reduces to: x^L += alpha * (W[L]^T eps[L-1] ⊙ f'(x^L))
+        // During training with clamped output, the caller re-clamps x[L] after this step.
+        for l in 1..=l_max {
+            // Term 1: -eps[l] (zero for top layer since eps[l_max] is never set)
             let neg_eps = -&state.eps[l];
 
-            // Term 2: (W[l+1])^T @ eps[l] (error feedback from layer above)
-            // W[l+1] predicts layer l from layer l+1, so:
-            //   - W[l+1]: shape (d_l, d_{l+1})
-            //   - W[l+1]^T: shape (d_{l+1}, d_l)
-            //   - eps[l]: shape (d_l)
-            //   - W[l+1]^T @ eps[l]: shape (d_{l+1})... wait, that's wrong.
-            //
-            // Actually we want feedback from BELOW (layer l-1 predicting to l).
+            // Term 2: Error feedback from layer below.
             // W[l] predicts layer l-1, so W[l]^T has shape (d_l, d_{l-1}).
             // eps[l-1] has shape (d_{l-1}).
             // W[l]^T @ eps[l-1] has shape (d_l). ✓
-
             let feedback = self.w[l].t().dot(&state.eps[l - 1]);
 
             // Term 3: f'(x[l]) (derivative of activation at layer l)
@@ -382,8 +388,8 @@ impl PCN {
     /// # Algorithm
     ///
     /// Iteratively minimizes energy until one of these conditions is met:
-    /// 1. State change converges: `max(|Δx[l]|) < threshold`
-    /// 2. Energy change converges: `ΔE < epsilon`
+    /// 1. Max prediction error converges: `max(|ε^ℓ|) < threshold`
+    /// 2. Energy change converges: `ΔE < epsilon` (default: 1e-6)
     /// 3. Safety limit reached: `t >= max_steps`
     ///
     /// In each iteration:
@@ -397,27 +403,25 @@ impl PCN {
     /// and `state.final_energy` for diagnostic purposes.
     ///
     /// # Arguments
+    /// - `threshold`: convergence threshold for max prediction error (e.g., 1e-5)
     /// - `max_steps`: maximum iterations as safety limit (e.g., 200)
     /// - `alpha`: state update rate (typically 0.01-0.1)
-    /// - `threshold`: convergence threshold for max state change (default: 1e-5)
-    /// - `epsilon`: convergence threshold for energy change (default: 1e-6)
     ///
     /// # Returns
-    /// Ok if relaxation completes (either converged or hit max_steps);
+    /// `Ok(steps_taken)` — the number of relaxation steps actually performed.
     /// Err if computation fails (shape mismatch, etc.)
     pub fn relax_with_convergence(
         &self,
         state: &mut State,
+        threshold: f32,
         max_steps: usize,
         alpha: f32,
-        threshold: f32,
-        epsilon: f32,
-    ) -> PCNResult<()> {
+    ) -> PCNResult<usize> {
+        let epsilon = 1e-6f32; // default energy convergence threshold
+
         // Compute initial energy
         self.compute_errors(state)?;
         let mut prev_energy = self.compute_energy(state);
-
-        let l_max = self.dims.len() - 1;
 
         for step in 0..max_steps {
             // Perform one relaxation step
@@ -433,12 +437,10 @@ impl PCN {
             if energy_delta < epsilon {
                 state.steps_taken = step + 1;
                 state.final_energy = curr_energy;
-                return Ok(());
+                return Ok(step + 1);
             }
 
-            // 2. State change is small: max(|Δx[l]|) < threshold
-            // We estimate state change as convergence when errors are small enough.
-            // A more direct approach: if all errors shrink and stabilize, we've converged.
+            // 2. Max prediction error is small
             let max_error = state.eps.iter().map(|e| {
                 e.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
             }).fold(0.0f32, f32::max);
@@ -446,7 +448,7 @@ impl PCN {
             if max_error < threshold {
                 state.steps_taken = step + 1;
                 state.final_energy = curr_energy;
-                return Ok(());
+                return Ok(step + 1);
             }
 
             prev_energy = curr_energy;
@@ -455,7 +457,7 @@ impl PCN {
         // Max steps reached; record final state
         state.steps_taken = max_steps;
         state.final_energy = self.compute_energy(state);
-        Ok(())
+        Ok(max_steps)
     }
 
     /// Relax the network for a given number of steps (fixed iteration, legacy).
@@ -517,8 +519,8 @@ impl PCN {
         state: &mut State,
         max_steps: usize,
         alpha: f32,
-    ) -> PCNResult<()> {
-        self.relax_with_convergence(state, max_steps, alpha, 1e-5, 1e-6)
+    ) -> PCNResult<usize> {
+        self.relax_with_convergence(state, 1e-5, max_steps, alpha)
     }
 
     /// Update weights using the Hebbian learning rule.
@@ -688,10 +690,11 @@ mod tests {
         state.x[0] = ndarray::array![1.0, 0.5];
         
         // Relax with convergence
-        assert!(pcn.relax_with_convergence(&mut state, 100, 0.01, 1e-5, 1e-6).is_ok());
+        let steps = pcn.relax_with_convergence(&mut state, 1e-5, 100, 0.01).unwrap();
         
         // Should have recorded steps and energy
-        assert!(state.steps_taken > 0);
+        assert!(steps > 0);
+        assert_eq!(steps, state.steps_taken);
         assert!(state.final_energy >= 0.0);
     }
 
@@ -704,10 +707,11 @@ mod tests {
         state.x[0] = ndarray::array![1.0, 0.5];
         
         // Relax with defaults
-        assert!(pcn.relax_adaptive(&mut state, 200, 0.01).is_ok());
+        let steps = pcn.relax_adaptive(&mut state, 200, 0.01).unwrap();
         
         // Should have recorded statistics
-        assert!(state.steps_taken > 0 && state.steps_taken <= 200);
+        assert!(steps > 0 && steps <= 200);
+        assert_eq!(steps, state.steps_taken);
         assert!(state.final_energy >= 0.0);
     }
 }

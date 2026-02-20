@@ -17,7 +17,7 @@ pub struct Metrics {
 
 /// Train the network on a single sample.
 pub fn train_sample(
-    pcn: &mut PCN,
+    _pcn: &mut PCN,
     _input: &Array1<f32>,
     _target: &Array1<f32>,
     _config: &Config,

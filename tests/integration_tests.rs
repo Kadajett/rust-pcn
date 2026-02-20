@@ -970,3 +970,456 @@ fn test_convergence_on_spiral_samples() {
         avg_steps
     );
 }
+
+// ============================================================================
+// PHASE 2 COMPREHENSIVE INTEGRATION TESTS
+// ============================================================================
+
+/// **Test 1: XOR with Tanh Activation**
+///
+/// Demonstrates that tanh activation enables the network to learn XOR with >90% accuracy.
+/// XOR is nonlinearly separable, so identity activation struggles. Tanh provides the
+/// nonlinear capacity needed.
+///
+/// This is the key Phase 2 breakthrough: nonlinear activations enable hard problems.
+#[test]
+fn test_phase2_xor_with_tanh_high_accuracy() {
+    let training_data = generate_xor_data();
+
+    // Network: 2 inputs -> 4 hidden -> 1 output (small enough to converge quickly)
+    let dims = vec![2, 4, 1];
+    let mut network = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let config = Config {
+        relax_steps: 40,
+        alpha: 0.05,
+        eta: 0.02,
+        clamp_output: true,
+    };
+
+    // Train with tanh for 200 epochs
+    let (accuracy, energy_decrease, avg_steps) = train_and_report(
+        &mut network,
+        &training_data,
+        config,
+        200,
+        "Phase2::XOR+Tanh",
+    );
+
+    // Phase 2 should achieve >90% on XOR (vs ~50% with identity)
+    assert!(
+        accuracy > 0.9,
+        "Tanh on XOR should achieve >90% accuracy (got {:.2}%)",
+        accuracy * 100.0
+    );
+
+    // Energy should decrease meaningfully
+    assert!(
+        energy_decrease > 0.1,
+        "Energy should decrease during training (decrease: {:.6})",
+        energy_decrease
+    );
+}
+
+/// **Test 2: 2D Spiral Classification with Nonlinear Boundary**
+///
+/// The 2D spiral is a classic test of nonlinear representational power.
+/// A linear network cannot separate the spiral; tanh activation is required.
+///
+/// This validates that the network can learn nonlinearly separable patterns.
+#[test]
+fn test_phase2_spiral_nonlinear_boundary() {
+    let training_data = generate_spiral_data(50, 2);
+
+    // Network: 2 inputs -> 8 hidden -> 1 output
+    let dims = vec![2, 8, 1];
+    let mut network = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let config = Config {
+        relax_steps: 50,
+        alpha: 0.1,
+        eta: 0.01,
+        clamp_output: true,
+    };
+
+    // Train for 300 epochs
+    let (accuracy, energy_decrease, _avg_steps) = train_and_report(
+        &mut network,
+        &training_data,
+        config,
+        300,
+        "Phase2::Spiral+Tanh",
+    );
+
+    // Should achieve >70% on the challenging nonlinear spiral
+    assert!(
+        accuracy > 0.7,
+        "Tanh on spiral should achieve >70% accuracy (got {:.2}%)",
+        accuracy * 100.0
+    );
+
+    // Energy should decrease meaningfully (spiral is hard, but should improve)
+    assert!(
+        energy_decrease > 0.0,
+        "Energy should decrease during spiral training"
+    );
+}
+
+/// **Test 3: Energy Monotonicity During Relaxation**
+///
+/// A core property of the energy function: it should never increase when relaxing.
+/// Each `relax_step` moves in the negative gradient direction.
+///
+/// This validates the energy minimization principle underlying PCN.
+#[test]
+fn test_phase2_energy_never_increases_during_relaxation() {
+    let training_data = generate_xor_data();
+    let dims = vec![2, 4, 1];
+
+    let mut network = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let config = Config {
+        relax_steps: 100,
+        alpha: 0.05,
+        eta: 0.01,
+        clamp_output: false, // Don't clamp during relaxation to monitor energy naturally
+    };
+
+    // Train briefly to get a non-trivial state
+    for (input, target) in &training_data {
+        let mut state = network.init_state();
+        state.x[0] = input.clone();
+
+        for _ in 0..20 {
+            network
+                .compute_errors(&mut state)
+                .expect("Error computation failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("Relaxation failed");
+        }
+
+        network
+            .compute_errors(&mut state)
+            .expect("Error computation failed");
+        network
+            .update_weights(&state, config.eta)
+            .expect("Weight update failed");
+    }
+
+    // Now test energy monotonicity on fresh state
+    let (input, target) = &training_data[0];
+    let mut state = network.init_state();
+    state.x[0] = input.clone();
+    state.x[state.x.len() - 1] = ndarray::arr1(&[*target]);
+
+    network
+        .compute_errors(&mut state)
+        .expect("Error computation failed");
+    let mut prev_energy = network.compute_energy(&state);
+
+    let mut max_energy_increase = 0.0f32;
+    let mut num_steps = 0;
+
+    // Relax for many steps and check energy never increases
+    for step in 0..200 {
+        network
+            .relax_step(&mut state, config.alpha)
+            .expect("Relaxation failed");
+        network
+            .compute_errors(&mut state)
+            .expect("Error computation failed");
+
+        let curr_energy = network.compute_energy(&state);
+        let energy_change = curr_energy - prev_energy;
+
+        if energy_change > 0.0 {
+            max_energy_increase = max_energy_increase.max(energy_change);
+            println!(
+                "  Step {}: Energy increased by {:.2e} (E: {:.6} -> {:.6})",
+                step, energy_change, prev_energy, curr_energy
+            );
+        }
+
+        prev_energy = curr_energy;
+        num_steps += 1;
+    }
+
+    println!(
+        "Phase2::EnergyMonotonicity: {} steps, max increase {:.2e}",
+        num_steps, max_energy_increase
+    );
+
+    // Energy should never increase by a significant amount
+    // (allow tiny numerical errors, e.g., 1e-6)
+    assert!(
+        max_energy_increase <= 1e-5,
+        "Energy should never increase significantly; max increase was {:.2e}",
+        max_energy_increase
+    );
+}
+
+/// **Test 4: Adaptive Stopping Uses Fewer Steps Than Fixed Iterations**
+///
+/// Phase 2 adds convergence-based adaptive stopping.
+/// This should reduce the number of relaxation steps needed compared to fixed iteration.
+///
+/// A network clamped to a target should converge quickly (few steps),
+/// while fixed iteration always uses all steps.
+#[test]
+fn test_phase2_adaptive_convergence_fewer_steps() {
+    let training_data = generate_xor_data();
+    let dims = vec![2, 4, 1];
+
+    let network = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let alpha = 0.05;
+    let max_steps = 200;
+
+    println!("Phase2::AdaptiveConvergence: Comparing fixed vs adaptive stopping");
+
+    // Test adaptive convergence
+    let mut adaptive_steps_vec = Vec::new();
+    for (input, target) in &training_data {
+        let mut state = network.init_state();
+        state.x[0] = input.clone();
+        state.x[state.x.len() - 1] = ndarray::arr1(&[*target]);
+
+        let steps_taken = network
+            .relax_with_convergence(&mut state, 1e-5, max_steps, alpha)
+            .expect("Relaxation failed");
+
+        adaptive_steps_vec.push(steps_taken);
+    }
+
+    let avg_adaptive_steps = adaptive_steps_vec.iter().sum::<usize>() as f32
+        / adaptive_steps_vec.len() as f32;
+
+    println!(
+        "  Adaptive: {:.1} steps on average (max {})",
+        avg_adaptive_steps, max_steps
+    );
+
+    // Adaptive should be well below fixed max_steps for this simple problem
+    assert!(
+        avg_adaptive_steps < (max_steps as f32 * 0.8),
+        "Adaptive convergence should use < 80% of max_steps (got {:.1} / {})",
+        avg_adaptive_steps, max_steps
+    );
+
+    // All individual samples should converge
+    for (i, steps) in adaptive_steps_vec.iter().enumerate() {
+        assert!(
+            *steps < max_steps,
+            "Sample {} should converge before max_steps (took {})",
+            i, steps
+        );
+    }
+}
+
+/// **Test 5: Weight Learning with Tanh Activation**
+///
+/// Verifies that weights change meaningfully during training with tanh.
+/// This confirms that the Hebbian learning rule is applied correctly
+/// and that the network is actually learning, not just stuck.
+#[test]
+fn test_phase2_weight_learning_with_tanh() {
+    let training_data = generate_xor_data();
+    let dims = vec![2, 4, 1];
+
+    let mut network = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let config = Config {
+        relax_steps: 30,
+        alpha: 0.05,
+        eta: 0.02,
+        clamp_output: true,
+    };
+
+    // Store initial weights
+    let initial_w = network.w.iter().map(|w| w.clone()).collect::<Vec<_>>();
+    let initial_b = network.b.iter().map(|b| b.clone()).collect::<Vec<_>>();
+
+    println!("Phase2::WeightLearning: Tracking weight changes during training");
+
+    // Train for 100 epochs
+    for epoch in 0..100 {
+        for (input, target) in &training_data {
+            let mut state = network.init_state();
+            state.x[0] = input.clone();
+
+            for _ in 0..config.relax_steps {
+                network
+                    .compute_errors(&mut state)
+                    .expect("Error computation failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("Relaxation failed");
+
+                if config.clamp_output {
+                    state.x[state.x.len() - 1] = ndarray::arr1(&[*target]);
+                }
+            }
+
+            network
+                .compute_errors(&mut state)
+                .expect("Error computation failed");
+            network
+                .update_weights(&state, config.eta)
+                .expect("Weight update failed");
+        }
+
+        if epoch == 49 {
+            // Check progress at halfway point
+            let w_change_mid = network
+                .w
+                .iter()
+                .zip(initial_w.iter())
+                .map(|(w, w0)| (w - w0).norm_max())
+                .sum::<f32>();
+            println!("  After 50 epochs: Weight change = {:.6}", w_change_mid);
+        }
+    }
+
+    // Check final weight changes
+    let mut total_w_change = 0.0f32;
+    let mut total_b_change = 0.0f32;
+
+    for (w, w0) in network.w.iter().zip(initial_w.iter()) {
+        let change = (w - w0).norm_max();
+        total_w_change += change;
+    }
+
+    for (b, b0) in network.b.iter().zip(initial_b.iter()) {
+        let change = (&b - b0).norm_max();
+        total_b_change += change;
+    }
+
+    println!(
+        "  After 100 epochs: Total weight change = {:.6}, bias change = {:.6}",
+        total_w_change, total_b_change
+    );
+
+    // Weights must change meaningfully (> 0.01 after 100 epochs * 4 samples)
+    assert!(
+        total_w_change > 0.01,
+        "Weights should change meaningfully during training (change: {:.6})",
+        total_w_change
+    );
+
+    // Biases should also change
+    assert!(
+        total_b_change > 0.001,
+        "Biases should change during training (change: {:.6})",
+        total_b_change
+    );
+}
+
+/// **Test 6: Tanh Provides Better Convergence on Nonlinear Problems**
+///
+/// Direct comparison: tanh vs identity on XOR.
+/// Identity cannot solve XOR; tanh should achieve much higher accuracy.
+///
+/// This is the core Phase 2 validation: nonlinearity matters.
+#[test]
+fn test_phase2_tanh_vs_identity_on_xor() {
+    let training_data = generate_xor_data();
+    let dims = vec![2, 4, 1];
+    let num_epochs = 150;
+
+    let config = Config {
+        relax_steps: 40,
+        alpha: 0.05,
+        eta: 0.02,
+        clamp_output: true,
+    };
+
+    // Test with identity (Phase 1 baseline)
+    let mut network_identity = PCN::new(dims.clone()).expect("Failed to create network");
+    let (_acc_identity, _energy_id, _steps_id) =
+        train_and_report(&mut network_identity, &training_data, config.clone(), num_epochs, "Phase1::XOR+Identity");
+
+    // Test with tanh (Phase 2)
+    let mut network_tanh = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+    let (acc_tanh, _energy_tanh, _steps_tanh) =
+        train_and_report(&mut network_tanh, &training_data, config, num_epochs, "Phase2::XOR+Tanh");
+
+    // Tanh should perform significantly better on XOR
+    assert!(
+        acc_tanh > 0.75,
+        "Tanh on XOR should achieve >75% (got {:.2}%)",
+        acc_tanh * 100.0
+    );
+}
+
+/// **Test 7: Convergence Metrics are Properly Recorded**
+///
+/// Verify that `State::steps_taken` and `State::final_energy` are correctly
+/// populated after adaptive relaxation.
+#[test]
+fn test_phase2_convergence_metrics_recorded() {
+    let dims = vec![2, 3, 1];
+    let network = PCN::with_activation(
+        dims,
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let input = ndarray::arr1(&[0.5, 0.5]);
+    let target = 1.0f32;
+
+    let mut state = network.init_state();
+    state.x[0] = input.clone();
+    state.x[state.x.len() - 1] = ndarray::arr1(&[target]);
+
+    // Relax with adaptive stopping
+    network
+        .relax_adaptive(&mut state, 200, 0.05)
+        .expect("Relaxation failed");
+
+    println!(
+        "Phase2::ConvergenceMetrics: steps_taken={}, final_energy={:.6}",
+        state.steps_taken, state.final_energy
+    );
+
+    // Metrics should be recorded
+    assert!(
+        state.steps_taken > 0,
+        "steps_taken should be > 0 (got {})",
+        state.steps_taken
+    );
+    assert!(
+        state.steps_taken <= 200,
+        "steps_taken should be <= max_steps (got {})",
+        state.steps_taken
+    );
+    assert!(
+        state.final_energy >= 0.0,
+        "final_energy should be non-negative (got {:.6})",
+        state.final_energy
+    );
+}

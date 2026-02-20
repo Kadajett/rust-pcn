@@ -1,396 +1,641 @@
 //! Training loops, convergence checks, and metrics.
 //!
-//! Phase 3 Implementation: Mini-batch training with epoch support.
-//! - Single-sample training (baseline)
-//! - Mini-batch training with gradient accumulation
-//! - Epoch-level training with shuffling
-//! - Metrics tracking and aggregation
+//! This module provides:
+//! - Mini-batch training infrastructure
+//! - Epoch-based training loops
+//! - Training metrics (loss, accuracy, error tracking)
+//! - Batch iteration and shuffling
 
-use crate::core::PCN;
-use crate::Config;
-use ndarray::{Array1, Array2, Axis};
+use crate::core::{BatchState, PCN, PCNResult};
+use ndarray::{s, Array1, Array2};
+use rand::seq::SliceRandom;
 
 /// Metrics computed during training.
+///
+/// Tracks training progress per epoch or batch.
 #[derive(Debug, Clone)]
 pub struct Metrics {
     /// Total prediction error energy
     pub energy: f32,
-    /// Layer-wise error magnitudes
+    /// Layer-wise error magnitudes (L2 norm per layer)
     pub layer_errors: Vec<f32>,
     /// Classification accuracy (if applicable)
     pub accuracy: Option<f32>,
-}
-
-/// Mini-batch training epoch metrics.
-#[derive(Debug, Clone)]
-pub struct EpochMetrics {
-    /// Average loss across epoch
-    pub avg_loss: f32,
-    /// Total samples processed
+    /// Number of samples processed
     pub num_samples: usize,
-    /// Number of batches processed
-    pub num_batches: usize,
-    /// Per-batch losses
-    pub batch_losses: Vec<f32>,
 }
 
-/// Train the network on a single sample.
+/// Training configuration for batching and relaxation.
 ///
-/// # Algorithm
-/// 1. Initialize state from input
-/// 2. Clamp input and target (supervised training)
-/// 3. Relax for `config.relax_steps` iterations
-/// 4. Compute final errors
-/// 5. Update weights using Hebbian rule
-/// 6. Return energy and layer-wise errors
-pub fn train_sample(
-    pcn: &mut PCN,
-    input: &Array1<f32>,
-    target: &Array1<f32>,
-    config: &Config,
-) -> Result<Metrics, String> {
-    // Validate dimensions
-    if input.len() != pcn.dims()[0] {
-        return Err(format!(
-            "Input dim mismatch: expected {}, got {}",
-            pcn.dims()[0],
-            input.len()
-        ));
-    }
-    let l_max = pcn.dims().len() - 1;
-    if target.len() != pcn.dims()[l_max] {
-        return Err(format!(
-            "Target dim mismatch: expected {}, got {}",
-            pcn.dims()[l_max],
-            target.len()
-        ));
-    }
-
-    // Initialize state from input
-    let mut state = pcn
-        .init_state_from_input(input)
-        .map_err(|e| e.to_string())?;
-
-    // Clamp input and output
-    state.x[0] = input.clone();
-    state.x[l_max] = target.clone();
-
-    // Relax to equilibrium
-    pcn.relax(&mut state, config.relax_steps, config.alpha)
-        .map_err(|e| e.to_string())?;
-
-    // Update weights using Hebbian rule
-    pcn.update_weights(&state, config.eta)
-        .map_err(|e| e.to_string())?;
-
-    // Compute metrics
-    let energy = pcn.compute_energy(&state);
-    let layer_errors: Vec<f32> = state.eps.iter().map(|e| e.norm_l2()).collect();
-
-    Ok(Metrics {
-        energy,
-        layer_errors,
-        accuracy: None,
-    })
+/// Controls learning rates, relaxation steps, batch size, and convergence behavior.
+#[derive(Debug, Clone)]
+pub struct TrainingConfig {
+    /// Number of relaxation steps per sample in batch
+    pub relax_steps: usize,
+    /// State update rate (typically 0.01-0.1)
+    pub alpha: f32,
+    /// Weight learning rate (typically 0.001-0.01)
+    pub eta: f32,
+    /// Whether to clamp output during training
+    pub clamp_output: bool,
+    /// Batch size for mini-batch training
+    pub batch_size: usize,
+    /// Number of epochs to train
+    pub epochs: usize,
 }
 
-/// Train on a mini-batch of samples with weight gradient accumulation.
-///
-/// # Algorithm
-/// 1. For each sample in batch:
-///    - Initialize state
-///    - Clamp input and target
-///    - Relax to equilibrium
-///    - Accumulate weight gradients (no update yet)
-/// 2. Perform single batch weight update with accumulated gradients
-/// 3. Return aggregated metrics
-///
-/// **Advantages over per-sample training:**
-/// - Reduced weight update overhead (one update vs. batch_size updates)
-/// - Better gradient estimates through noise averaging
-/// - Faster convergence on coherent patterns
-pub fn train_batch(
-    pcn: &mut PCN,
-    batch_inputs: &Array2<f32>,  // Shape: (batch_size, input_dim)
-    batch_targets: &Array2<f32>, // Shape: (batch_size, output_dim)
-    config: &Config,
-) -> Result<EpochMetrics, String> {
-    let batch_size = batch_inputs.nrows();
-
-    // Validate dimensions
-    if batch_inputs.ncols() != pcn.dims()[0] {
-        return Err(format!(
-            "Batch input dim: expected {}, got {}",
-            pcn.dims()[0],
-            batch_inputs.ncols()
-        ));
-    }
-    let l_max = pcn.dims().len() - 1;
-    if batch_targets.ncols() != pcn.dims()[l_max] {
-        return Err(format!(
-            "Batch target dim: expected {}, got {}",
-            pcn.dims()[l_max],
-            batch_targets.ncols()
-        ));
-    }
-
-    // Accumulate gradients over batch
-    let mut accumulated_weight_grads: Vec<Array2<f32>> =
-        pcn.w.iter().map(|w| Array2::zeros(w.dim())).collect();
-    let mut accumulated_bias_grads: Vec<Array1<f32>> =
-        pcn.b.iter().map(|b| Array1::zeros(b.len())).collect();
-
-    let mut total_energy = 0.0f32;
-    let mut batch_losses = Vec::new();
-
-    // Process each sample in the batch
-    for i in 0..batch_size {
-        let input = batch_inputs.row(i).to_owned();
-        let target = batch_targets.row(i).to_owned();
-
-        // Initialize state from input
-        let mut state = pcn
-            .init_state_from_input(&input)
-            .map_err(|e| e.to_string())?;
-
-        // Clamp input and output
-        state.x[0] = input;
-        state.x[l_max] = target;
-
-        // Relax to equilibrium
-        pcn.relax(&mut state, config.relax_steps, config.alpha)
-            .map_err(|e| e.to_string())?;
-
-        // Accumulate energy
-        let sample_energy = pcn.compute_energy(&state);
-        total_energy += sample_energy;
-        batch_losses.push(sample_energy);
-
-        // Accumulate weight gradients: ε^ℓ-1 ⊗ f(x^ℓ)
-        for l in 1..=l_max {
-            let f_x_l = pcn.activation.apply(&state.x[l]);
-
-            // Outer product via broadcasting
-            let eps_col = state.eps[l - 1].view().insert_axis(Axis(1));
-            let fx_row = f_x_l.view().insert_axis(Axis(0));
-            let delta_w = &eps_col * &fx_row;
-
-            accumulated_weight_grads[l] = &accumulated_weight_grads[l] + &delta_w;
-            accumulated_bias_grads[l - 1] = &accumulated_bias_grads[l - 1] + &state.eps[l - 1];
+impl Default for TrainingConfig {
+    fn default() -> Self {
+        Self {
+            relax_steps: 20,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+            batch_size: 32,
+            epochs: 10,
         }
     }
-
-    // Apply batch weight update (average by batch size)
-    let batch_scale = config.eta / batch_size as f32;
-    for l in 1..=l_max {
-        pcn.w[l] = &pcn.w[l] + &(batch_scale * &accumulated_weight_grads[l]);
-        pcn.b[l - 1] = &pcn.b[l - 1] + batch_scale * &accumulated_bias_grads[l - 1];
-    }
-
-    let avg_loss = total_energy / batch_size as f32;
-
-    Ok(EpochMetrics {
-        avg_loss,
-        num_samples: batch_size,
-        num_batches: 1,
-        batch_losses,
-    })
 }
 
-/// Train for one full epoch over a dataset.
+/// A batch iterator that yields mini-batches from a dataset.
+///
+/// Supports shuffling for each epoch and configurable batch size.
+pub struct BatchIterator {
+    /// Input data: (num_samples, input_dim)
+    inputs: Array2<f32>,
+    /// Target data: (num_samples, output_dim)
+    targets: Array2<f32>,
+    /// Batch size
+    batch_size: usize,
+    /// Current position in the epoch
+    current_idx: usize,
+    /// Indices for shuffling (allows re-shuffling each epoch)
+    indices: Vec<usize>,
+}
+
+impl BatchIterator {
+    /// Create a new batch iterator.
+    ///
+    /// # Arguments
+    /// - `inputs`: Input data matrix, shape (num_samples, input_dim)
+    /// - `targets`: Target data matrix, shape (num_samples, output_dim)
+    /// - `batch_size`: Number of samples per batch
+    ///
+    /// # Errors
+    /// - If inputs and targets have different first dimension
+    /// - If batch_size is 0
+    pub fn new(
+        inputs: Array2<f32>,
+        targets: Array2<f32>,
+        batch_size: usize,
+    ) -> PCNResult<Self> {
+        let num_samples = inputs.nrows();
+
+        if inputs.nrows() != targets.nrows() {
+            return Err(crate::core::PCNError::ShapeMismatch(
+                format!(
+                    "inputs ({} samples) and targets ({} samples) must have same first dimension",
+                    inputs.nrows(),
+                    targets.nrows()
+                ),
+            ));
+        }
+
+        if batch_size == 0 {
+            return Err(crate::core::PCNError::InvalidConfig(
+                "batch_size must be > 0".to_string(),
+            ));
+        }
+
+        let indices: Vec<usize> = (0..num_samples).collect();
+
+        Ok(Self {
+            inputs,
+            targets,
+            batch_size,
+            current_idx: 0,
+            indices,
+        })
+    }
+
+    /// Shuffle the indices for the next epoch.
+    ///
+    /// This allows training on randomized batches for better generalization.
+    pub fn shuffle(&mut self) {
+        use rand::thread_rng;
+        self.indices.shuffle(&mut thread_rng());
+        self.current_idx = 0;
+    }
+
+    /// Reset iteration without shuffling.
+    pub fn reset(&mut self) {
+        self.current_idx = 0;
+    }
+
+    /// Get the total number of samples in the dataset.
+    pub fn num_samples(&self) -> usize {
+        self.inputs.nrows()
+    }
+
+    /// Get the input dimension.
+    pub fn input_dim(&self) -> usize {
+        self.inputs.ncols()
+    }
+
+    /// Get the output dimension.
+    pub fn output_dim(&self) -> usize {
+        self.targets.ncols()
+    }
+
+    /// Get the batch size.
+    pub fn batch_size(&self) -> usize {
+        self.batch_size
+    }
+
+    /// Get the next batch as matrices.
+    ///
+    /// # Returns
+    /// `Some((inputs, targets))` if there are more samples, `None` if epoch is done.
+    /// The returned batch may be smaller than `batch_size` for the last batch.
+    pub fn next_batch(&mut self) -> Option<(Array2<f32>, Array2<f32>)> {
+        if self.current_idx >= self.indices.len() {
+            return None;
+        }
+
+        let end_idx = std::cmp::min(self.current_idx + self.batch_size, self.indices.len());
+        let batch_indices: Vec<usize> = self.indices[self.current_idx..end_idx].to_vec();
+
+        // Extract batch rows
+        let batch_inputs = self
+            .inputs
+            .select(ndarray::Axis(0), &batch_indices);
+        let batch_targets = self
+            .targets
+            .select(ndarray::Axis(0), &batch_indices);
+
+        self.current_idx = end_idx;
+
+        Some((batch_inputs, batch_targets))
+    }
+
+    /// Check if there are more batches in this epoch.
+    pub fn has_next(&self) -> bool {
+        self.current_idx < self.indices.len()
+    }
+}
+
+/// Train the network on a single mini-batch.
 ///
 /// # Algorithm
-/// 1. Optionally shuffle dataset indices
-/// 2. Divide into batches of specified size
-/// 3. For each batch, call `train_batch()`
-/// 4. Aggregate and return epoch-level metrics
+///
+/// 1. Initialize batch state
+/// 2. Clamp input and target
+/// 3. Relax for `config.relax_steps` iterations
+/// 4. Compute errors and update weights
+/// 5. Return metrics
 ///
 /// # Arguments
-/// - `pcn`: Network to train
-/// - `inputs`: Full dataset, shape (num_samples, input_dim)
-/// - `targets`: Full targets, shape (num_samples, output_dim)
-/// - `batch_size`: Samples per batch (32-128 typical)
-/// - `config`: Training hyperparameters
-/// - `shuffle`: Whether to randomize sample order
+/// - `pcn`: The network to train
+/// - `inputs`: Batch of input vectors, shape (batch_size, input_dim)
+/// - `targets`: Batch of target vectors, shape (batch_size, output_dim)
+/// - `config`: Training configuration
+///
+/// # Returns
+/// Metrics for this batch (energy, layer errors, accuracy estimate)
+pub fn train_batch(
+    pcn: &mut PCN,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    config: &TrainingConfig,
+) -> PCNResult<Metrics> {
+    let batch_size = inputs.nrows();
+
+    // Validate shapes
+    if inputs.nrows() != targets.nrows() {
+        return Err(crate::core::PCNError::ShapeMismatch(
+            format!(
+                "batch size mismatch: inputs {} vs targets {}",
+                inputs.nrows(),
+                targets.nrows()
+            ),
+        ));
+    }
+
+    if inputs.ncols() != pcn.dims()[0] {
+        return Err(crate::core::PCNError::ShapeMismatch(
+            format!(
+                "input dimension mismatch: got {} expected {}",
+                inputs.ncols(),
+                pcn.dims()[0]
+            ),
+        ));
+    }
+
+    if targets.ncols() != pcn.dims()[pcn.dims().len() - 1] {
+        return Err(crate::core::PCNError::ShapeMismatch(
+            format!(
+                "target dimension mismatch: got {} expected {}",
+                targets.ncols(),
+                pcn.dims()[pcn.dims().len() - 1]
+            ),
+        ));
+    }
+
+    // Initialize batch state
+    let mut state = pcn.init_batch_state(batch_size);
+
+    // Clamp input layer
+    state.x[0] = inputs.clone();
+
+    // Clamp output layer if requested
+    if config.clamp_output {
+        let l_max = pcn.dims().len() - 1;
+        state.x[l_max] = targets.clone();
+    }
+
+    // Relax to equilibrium
+    pcn.relax_batch(&mut state, config.relax_steps, config.alpha)?;
+
+    // Update weights using Hebbian rule
+    pcn.update_batch_weights(&state, config.eta)?;
+
+    // Compute metrics
+    let metrics = compute_batch_metrics(pcn, &state, targets);
+
+    Ok(metrics)
+}
+
+/// Compute training metrics for a batch.
+fn compute_batch_metrics(
+    pcn: &PCN,
+    state: &BatchState,
+    targets: &Array2<f32>,
+) -> Metrics {
+    let mut layer_errors = Vec::new();
+
+    // Compute L2 norm of errors per layer
+    for eps in &state.eps {
+        let layer_energy: f32 = eps.iter().map(|e| e * e).sum();
+        let layer_error = (layer_energy / eps.nrows() as f32).sqrt();
+        layer_errors.push(layer_error);
+    }
+
+    let l_max = pcn.dims().len() - 1;
+
+    // Estimate accuracy based on output layer predictions
+    // (For classification: argmax match between prediction and target)
+    let accuracy = if pcn.dims()[l_max] > 1 {
+        let mut correct = 0usize;
+        for sample_idx in 0..state.batch_size {
+            // Get prediction (argmax of output)
+            let output_pred = state.x[l_max].row(sample_idx);
+            let pred_class = output_pred
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+            // Get target (argmax of target)
+            let target = targets.row(sample_idx);
+            let target_class = target
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(idx, _)| idx)
+                .unwrap_or(0);
+
+            if pred_class == target_class {
+                correct += 1;
+            }
+        }
+        Some(correct as f32 / state.batch_size as f32)
+    } else {
+        None
+    };
+
+    Metrics {
+        energy: state.final_energy,
+        layer_errors,
+        accuracy,
+        num_samples: state.batch_size,
+    }
+}
+
+/// Train the network for one epoch on a dataset.
+///
+/// # Algorithm
+///
+/// 1. Create batch iterator with optional shuffling
+/// 2. For each batch in the iterator:
+///    a. Train on the batch
+///    b. Accumulate metrics
+/// 3. Return epoch metrics (averages across batches)
+///
+/// # Arguments
+/// - `pcn`: The network to train
+/// - `inputs`: Full training input data, shape (num_samples, input_dim)
+/// - `targets`: Full training target data, shape (num_samples, output_dim)
+/// - `config`: Training configuration
+/// - `shuffle`: Whether to shuffle batches for this epoch
+///
+/// # Returns
+/// Epoch metrics: averages of energy, layer errors, and accuracy across all batches
 pub fn train_epoch(
     pcn: &mut PCN,
     inputs: &Array2<f32>,
     targets: &Array2<f32>,
-    batch_size: usize,
-    config: &Config,
+    config: &TrainingConfig,
     shuffle: bool,
-) -> Result<EpochMetrics, String> {
-    let num_samples = inputs.nrows();
+) -> PCNResult<Metrics> {
+    let mut iterator = BatchIterator::new(inputs.clone(), targets.clone(), config.batch_size)?;
 
-    if batch_size == 0 {
-        return Err("Batch size must be > 0".to_string());
-    }
-    if num_samples != targets.nrows() {
-        return Err(format!(
-            "Sample count mismatch: inputs={}, targets={}",
-            num_samples, targets.nrows()
-        ));
-    }
-
-    // Create and optionally shuffle indices
-    let mut indices: Vec<usize> = (0..num_samples).collect();
     if shuffle {
-        shuffle_indices(&mut indices);
+        iterator.shuffle();
+    } else {
+        iterator.reset();
     }
 
-    // Process batches
-    let mut all_batch_losses = Vec::new();
     let mut total_energy = 0.0f32;
-    let num_batches = (num_samples + batch_size - 1) / batch_size;
+    let mut total_samples = 0usize;
+    let mut layer_error_accum = vec![0.0f32; pcn.dims().len()];
+    let mut total_correct = 0usize;
+    let num_classes = pcn.dims()[pcn.dims().len() - 1];
 
-    for batch_idx in 0..num_batches {
-        let start = batch_idx * batch_size;
-        let end = (start + batch_size).min(num_samples);
-        let current_batch_size = end - start;
+    while iterator.has_next() {
+        if let Some((batch_inputs, batch_targets)) = iterator.next_batch() {
+            let batch_metrics = train_batch(pcn, &batch_inputs, &batch_targets, config)?;
 
-        // Extract batch rows via indices
-        let batch_indices = &indices[start..end];
+            total_energy += batch_metrics.energy * batch_metrics.num_samples as f32;
+            total_samples += batch_metrics.num_samples;
 
-        let mut batch_inputs = Array2::zeros((current_batch_size, inputs.ncols()));
-        let mut batch_targets = Array2::zeros((current_batch_size, targets.ncols()));
+            // Accumulate layer errors
+            for (i, layer_err) in batch_metrics.layer_errors.iter().enumerate() {
+                layer_error_accum[i] += layer_err * batch_metrics.num_samples as f32;
+            }
 
-        for (local_idx, &global_idx) in batch_indices.iter().enumerate() {
-            batch_inputs.row_mut(local_idx).assign(&inputs.row(global_idx));
-            batch_targets.row_mut(local_idx).assign(&targets.row(global_idx));
+            // Accumulate accuracy
+            if let Some(acc) = batch_metrics.accuracy {
+                total_correct += (acc * batch_metrics.num_samples as f32) as usize;
+            }
         }
-
-        // Train this batch
-        let batch_metrics = train_batch(pcn, &batch_inputs, &batch_targets, config)?;
-        all_batch_losses.extend(&batch_metrics.batch_losses);
-        total_energy += batch_metrics.avg_loss * current_batch_size as f32;
     }
 
-    let avg_loss = total_energy / num_samples as f32;
+    // Average metrics across all batches
+    let avg_energy = if total_samples > 0 {
+        total_energy / total_samples as f32
+    } else {
+        0.0
+    };
 
-    Ok(EpochMetrics {
-        avg_loss,
-        num_samples,
-        num_batches,
-        batch_losses: all_batch_losses,
+    let avg_layer_errors: Vec<f32> = layer_error_accum
+        .iter()
+        .map(|err| {
+            if total_samples > 0 {
+                err / total_samples as f32
+            } else {
+                0.0
+            }
+        })
+        .collect();
+
+    let avg_accuracy = if total_samples > 0 && num_classes > 1 {
+        Some(total_correct as f32 / total_samples as f32)
+    } else {
+        None
+    };
+
+    Ok(Metrics {
+        energy: avg_energy,
+        layer_errors: avg_layer_errors,
+        accuracy: avg_accuracy,
+        num_samples: total_samples,
     })
 }
 
-/// Compute energy of a state using the Energy principle.
+/// Full training loop with epoch tracking.
 ///
-/// Energy = (1/2) * Σ_ℓ ||ε^ℓ||²
+/// # Arguments
+/// - `pcn`: The network to train
+/// - `inputs`: Training input data
+/// - `targets`: Training target data
+/// - `config`: Training configuration (includes num_epochs)
 ///
-/// Where ε^ℓ is the prediction error at layer ℓ.
-/// This is already implemented in PCN::compute_energy(),
-/// but provided here for compatibility.
-pub fn compute_energy(state: &crate::core::State) -> f32 {
-    let mut energy = 0.0f32;
-    for eps in &state.eps {
-        let sq_norm = eps.dot(eps);
-        energy += sq_norm;
-    }
-    0.5 * energy
-}
+/// # Returns
+/// Vector of metrics for each epoch
+pub fn train_epochs(
+    pcn: &mut PCN,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    config: &TrainingConfig,
+) -> PCNResult<Vec<Metrics>> {
+    let mut epoch_metrics = Vec::new();
 
-/// Shuffle indices in-place using Fisher-Yates algorithm.
-fn shuffle_indices(indices: &mut [usize]) {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    for epoch in 0..config.epochs {
+        let metrics = train_epoch(pcn, inputs, targets, config, true)?;
 
-    for i in (1..indices.len()).rev() {
-        let j = rng.gen_range(0..=i);
-        indices.swap(i, j);
+        println!(
+            "Epoch {}/{}: energy={:.6}, accuracy={:.4}",
+            epoch + 1,
+            config.epochs,
+            metrics.energy,
+            metrics.accuracy.unwrap_or(0.0)
+        );
+
+        epoch_metrics.push(metrics);
     }
+
+    Ok(epoch_metrics)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::PCN;
 
     #[test]
-    fn test_metrics() {
+    fn test_metrics_creation() {
         let metrics = Metrics {
             energy: 0.5,
             layer_errors: vec![0.1, 0.2],
             accuracy: Some(0.95),
+            num_samples: 32,
         };
         assert!(metrics.energy > 0.0);
+        assert_eq!(metrics.num_samples, 32);
     }
 
     #[test]
-    fn test_shuffle_indices() {
-        let mut indices = vec![0, 1, 2, 3, 4];
-        let original = indices.clone();
-        shuffle_indices(&mut indices);
+    fn test_batch_iterator_creation() {
+        let inputs = Array2::zeros((100, 4));
+        let targets = Array2::zeros((100, 2));
+        let iter = BatchIterator::new(inputs, targets, 16);
 
-        // Check all indices still present
-        assert_eq!(indices.len(), original.len());
-        for i in &original {
-            assert!(indices.contains(i));
+        assert!(iter.is_ok());
+        let iter = iter.unwrap();
+        assert_eq!(iter.num_samples(), 100);
+        assert_eq!(iter.input_dim(), 4);
+        assert_eq!(iter.output_dim(), 2);
+        assert_eq!(iter.batch_size(), 16);
+    }
+
+    #[test]
+    fn test_batch_iterator_shape_mismatch() {
+        let inputs = Array2::zeros((100, 4));
+        let targets = Array2::zeros((50, 2)); // Wrong number of samples
+        let iter = BatchIterator::new(inputs, targets, 16);
+
+        assert!(iter.is_err());
+    }
+
+    #[test]
+    fn test_batch_iterator_next_batch() {
+        let inputs = Array2::zeros((100, 4));
+        let targets = Array2::zeros((100, 2));
+        let mut iter = BatchIterator::new(inputs, targets, 32).unwrap();
+
+        // First batch
+        let batch1 = iter.next_batch();
+        assert!(batch1.is_some());
+        let (inp1, tgt1) = batch1.unwrap();
+        assert_eq!(inp1.nrows(), 32);
+        assert_eq!(tgt1.nrows(), 32);
+
+        // Second batch
+        let batch2 = iter.next_batch();
+        assert!(batch2.is_some());
+        let (inp2, _) = batch2.unwrap();
+        assert_eq!(inp2.nrows(), 32);
+
+        // Third batch
+        let batch3 = iter.next_batch();
+        assert!(batch3.is_some());
+        let (inp3, _) = batch3.unwrap();
+        assert_eq!(inp3.nrows(), 32);
+
+        // Fourth batch (partial)
+        let batch4 = iter.next_batch();
+        assert!(batch4.is_some());
+        let (inp4, _) = batch4.unwrap();
+        assert_eq!(inp4.nrows(), 4); // Only 4 samples left
+
+        // No more batches
+        let batch5 = iter.next_batch();
+        assert!(batch5.is_none());
+    }
+
+    #[test]
+    fn test_batch_iterator_shuffle() {
+        let inputs = Array2::zeros((20, 4));
+        let targets = Array2::zeros((20, 2));
+        let mut iter = BatchIterator::new(inputs, targets, 5).unwrap();
+
+        // Get batches before shuffle
+        let mut order1 = Vec::new();
+        while let Some(_) = iter.next_batch() {
+            order1.push(iter.current_idx);
         }
+
+        // Shuffle and get batches again
+        iter.shuffle();
+        let mut order2 = Vec::new();
+        while let Some(_) = iter.next_batch() {
+            order2.push(iter.current_idx);
+        }
+
+        // Orders should be the same (both read all 20 samples)
+        // but samples might be in different order (hard to verify without
+        // looking at actual data)
+        assert_eq!(order1.len(), order2.len());
     }
 
     #[test]
-    fn test_train_batch_shape() {
-        let config = Config::default();
-        let mut pcn = PCN::new(vec![2, 3, 2]).unwrap();
+    fn test_train_batch_basic() {
+        let dims = vec![2, 3, 2];
+        let mut pcn = PCN::new(dims).unwrap();
 
-        let batch_inputs = Array2::from_elem((4, 2), 0.1);
-        let batch_targets = Array2::from_elem((4, 2), 0.5);
+        let inputs = Array2::zeros((4, 2));
+        let targets = Array2::zeros((4, 2));
 
-        let result = train_batch(&mut pcn, &batch_inputs, &batch_targets, &config);
+        let config = TrainingConfig {
+            relax_steps: 5,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+            batch_size: 4,
+            epochs: 1,
+        };
+
+        let result = train_batch(&mut pcn, &inputs, &targets, &config);
         assert!(result.is_ok());
 
         let metrics = result.unwrap();
+        assert!(metrics.energy >= 0.0);
         assert_eq!(metrics.num_samples, 4);
-        assert!(metrics.avg_loss >= 0.0);
-        assert_eq!(metrics.batch_losses.len(), 4);
     }
 
     #[test]
-    fn test_train_epoch_basic() {
-        let config = Config::default();
-        let mut pcn = PCN::new(vec![2, 3, 2]).unwrap();
+    fn test_train_batch_shape_mismatch() {
+        let dims = vec![2, 3, 2];
+        let mut pcn = PCN::new(dims).unwrap();
 
-        let inputs = Array2::from_elem((8, 2), 0.1);
-        let targets = Array2::from_elem((8, 2), 0.5);
+        let inputs = Array2::zeros((4, 3)); // Wrong input dimension
+        let targets = Array2::zeros((4, 2));
 
-        let result = train_epoch(&mut pcn, &inputs, &targets, 2, &config, false);
+        let config = TrainingConfig::default();
+
+        let result = train_batch(&mut pcn, &inputs, &targets, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_train_epoch() {
+        let dims = vec![2, 3, 2];
+        let mut pcn = PCN::new(dims).unwrap();
+
+        let inputs = Array2::zeros((20, 2));
+        let targets = Array2::zeros((20, 2));
+
+        let config = TrainingConfig {
+            relax_steps: 5,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+            batch_size: 4,
+            epochs: 1,
+        };
+
+        let result = train_epoch(&mut pcn, &inputs, &targets, &config, false);
         assert!(result.is_ok());
 
         let metrics = result.unwrap();
-        assert_eq!(metrics.num_samples, 8);
-        assert_eq!(metrics.num_batches, 4);
-        assert!(metrics.avg_loss >= 0.0);
+        assert!(metrics.energy >= 0.0);
+        assert_eq!(metrics.num_samples, 20);
     }
 
     #[test]
-    fn test_train_epoch_uneven_batches() {
-        let config = Config::default();
-        let mut pcn = PCN::new(vec![2, 3, 2]).unwrap();
+    fn test_train_epochs() {
+        let dims = vec![2, 3, 2];
+        let mut pcn = PCN::new(dims).unwrap();
 
-        // 13 = 4*3 + 1, so last batch is size 1
-        let inputs = Array2::from_elem((13, 2), 0.1);
-        let targets = Array2::from_elem((13, 2), 0.5);
+        let inputs = Array2::zeros((10, 2));
+        let targets = Array2::zeros((10, 2));
 
-        let metrics = train_epoch(&mut pcn, &inputs, &targets, 4, &config, false)
-            .expect("epoch training failed");
+        let config = TrainingConfig {
+            relax_steps: 3,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+            batch_size: 4,
+            epochs: 2,
+        };
 
-        assert_eq!(metrics.num_samples, 13);
-        assert_eq!(metrics.num_batches, 4); // ceil(13/4) = 4
-        assert_eq!(metrics.batch_losses.len(), 13); // All 13 samples recorded
-    }
+        let result = train_epochs(&mut pcn, &inputs, &targets, &config);
+        assert!(result.is_ok());
 
-    #[test]
-    fn test_train_batch_dimension_mismatch() {
-        let config = Config::default();
-        let mut pcn = PCN::new(vec![4, 6, 3]).unwrap();
-
-        // Wrong input dimension
-        let batch_inputs = Array2::from_elem((4, 5), 0.1);
-        let batch_targets = Array2::from_elem((4, 3), 0.5);
-
-        let result = train_batch(&mut pcn, &batch_inputs, &batch_targets, &config);
-        assert!(result.is_err());
+        let epoch_metrics = result.unwrap();
+        assert_eq!(epoch_metrics.len(), 2); // Should have metrics for 2 epochs
+        for metrics in epoch_metrics {
+            assert!(metrics.energy >= 0.0);
+        }
     }
 }

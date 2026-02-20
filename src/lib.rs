@@ -22,7 +22,7 @@ pub mod data;
 pub mod training;
 pub mod utils;
 
-pub use core::{Activation, IdentityActivation, TanhActivation, PCNError, PCNResult, State, PCN};
+pub use core::{Activation, IdentityActivation, TanhActivation, BatchState, PCNError, PCNResult, State, PCN};
 pub use training::{Metrics, EpochMetrics, train_sample, train_batch, train_epoch};
 
 /// Training configuration for relaxation and weight updates.

@@ -3,6 +3,16 @@ name = "pcn"
 version = "0.1.0"
 edition = "2021"
 
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = "warn"
+nursery = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+
 [dependencies]
 ndarray = "0.16"
 ndarray-rand = "0.15"
@@ -15,6 +25,7 @@ rayon = "1.8"
 
 [dev-dependencies]
 criterion = "0.5"
+approx = "0.5"
 
 [profile.release]
 opt-level = 3

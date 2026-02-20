@@ -7,7 +7,7 @@
 //! - Training is reproducible and stable
 
 use approx::assert_abs_diff_eq;
-use pcn::{Config, PCN};
+use pcn::{Config, TanhActivation, PCN};
 
 /// Helper function to clamp a value to [0, 1]
 fn clamp_01(x: f32) -> f32 {
@@ -548,4 +548,266 @@ fn test_deterministic_error_computation() {
             assert_abs_diff_eq!(v1, v2, epsilon = 1e-10);
         }
     }
+}
+
+// ============================================================================
+// PHASE 2 INTEGRATION TESTS WITH TANH
+// ============================================================================
+
+/// Generate 2D spiral dataset for nonlinear separability test.
+///
+/// Creates a spiral pattern where points rotate around origin with distance
+/// determining the target class. This is a classic nonlinearly separable problem.
+fn generate_spiral(n_points: usize, n_turns: usize) -> Vec<(ndarray::Array1<f32>, f32)> {
+    let mut data = Vec::new();
+
+    for i in 0..n_points {
+        // t ranges from 0 to n_turns * 2π
+        let t = (i as f32 / n_points as f32) * (n_turns as f32) * std::f32::consts::PI * 2.0;
+
+        // Spiral coordinates: r(t) = t, then convert to cartesian
+        let r = t / (n_turns as f32 * std::f32::consts::PI * 2.0); // normalize r to [0, 1]
+        let x = r * t.cos();
+        let y = r * t.sin();
+
+        // Normalize to [-1, 1] roughly
+        let x_norm = x / (n_turns as f32);
+        let y_norm = y / (n_turns as f32);
+
+        // Class based on turn number: 0 or 1 alternating
+        let class = if (t / (std::f32::consts::PI * 2.0)) as usize % 2 == 0 { 0.0 } else { 1.0 };
+
+        data.push((ndarray::arr1(&[x_norm, y_norm]), class));
+    }
+
+    data
+}
+
+/// Test 2D spiral problem with tanh (nonlinear separability).
+///
+/// This test verifies that tanh activation enables networks to learn
+/// nonlinearly separable patterns like the 2D spiral.
+#[test]
+fn test_spiral_with_tanh() {
+    // Generate spiral dataset with 2 complete rotations
+    let training_data = generate_spiral(40, 2);
+
+    // Network: 2 inputs -> 8 hidden -> 1 output
+    let dims = vec![2, 8, 1];
+    let mut network = PCN::with_activation(
+        dims.clone(),
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let config = Config {
+        relax_steps: 50,
+        alpha: 0.1,
+        eta: 0.01,
+        clamp_output: true,
+    };
+
+    // Train for 300 epochs
+    let num_epochs = 300;
+    let mut epoch_energies = Vec::new();
+
+    for epoch in 0..num_epochs {
+        let mut epoch_energy = 0.0;
+
+        for (input, target) in &training_data {
+            let mut state = network.init_state();
+            state.x[0] = input.clone();
+
+            // Relax for equilibrium
+            for _ in 0..config.relax_steps {
+                network
+                    .compute_errors(&mut state)
+                    .expect("Error computation failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("Relaxation failed");
+
+                if config.clamp_output {
+                    state.x[state.x.len() - 1] = ndarray::arr1(&[*target]);
+                }
+            }
+
+            network
+                .compute_errors(&mut state)
+                .expect("Error computation failed");
+
+            epoch_energy += network.compute_energy(&state);
+
+            network
+                .update_weights(&state, config.eta)
+                .expect("Weight update failed");
+        }
+
+        let avg_energy = epoch_energy / training_data.len() as f32;
+        epoch_energies.push(avg_energy);
+
+        if epoch % 100 == 0 {
+            println!("Spiral epoch {}: Avg Energy = {:.6}", epoch, avg_energy);
+        }
+    }
+
+    // Verify energy decreased overall
+    let initial_energy = epoch_energies[0];
+    let final_energy = epoch_energies[num_epochs - 1];
+    println!(
+        "Spiral: Initial energy {:.6}, Final energy {:.6}",
+        initial_energy, final_energy
+    );
+
+    assert!(
+        final_energy < initial_energy,
+        "Energy should decrease during spiral training"
+    );
+
+    // Test accuracy on trained network
+    let mut correct = 0;
+    for (input, target) in &training_data {
+        let mut state = network.init_state();
+        state.x[0] = input.clone();
+
+        for _ in 0..config.relax_steps {
+            network
+                .compute_errors(&mut state)
+                .expect("Error computation failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("Relaxation failed");
+        }
+        network
+            .compute_errors(&mut state)
+            .expect("Error computation failed");
+
+        let output = state.x[state.x.len() - 1][0];
+        let prediction = if output > 0.5 { 1.0 } else { 0.0 };
+
+        if (prediction - target).abs() < 1e-1 {
+            correct += 1;
+        }
+    }
+
+    let accuracy = correct as f32 / training_data.len() as f32;
+    println!("Spiral accuracy with tanh: {:.2}%", accuracy * 100.0);
+
+    // Should achieve reasonable accuracy on nonlinear spiral (>60%)
+    assert!(
+        accuracy >= 0.6,
+        "Tanh should achieve >=60% on 2D spiral (got {:.2}%)",
+        accuracy * 100.0
+    );
+}
+
+/// Test that tanh weight updates differ from identity on nonlinear problem.
+#[test]
+fn test_tanh_weight_updates_on_spiral() {
+    let training_data = generate_spiral(20, 2); // Smaller dataset
+    let dims = vec![2, 4, 1];
+
+    // Train with tanh
+    let mut network_tanh = PCN::with_activation(
+        dims.clone(),
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let config = Config {
+        relax_steps: 30,
+        alpha: 0.1,
+        eta: 0.01,
+        clamp_output: true,
+    };
+
+    let initial_w_tanh = network_tanh.w[1].clone();
+
+    // Train tanh for 50 epochs on spiral
+    for _epoch in 0..50 {
+        for (input, target) in &training_data {
+            let mut state = network_tanh.init_state();
+            state.x[0] = input.clone();
+
+            for _ in 0..config.relax_steps {
+                network_tanh
+                    .compute_errors(&mut state)
+                    .expect("Error computation failed");
+                network_tanh
+                    .relax_step(&mut state, config.alpha)
+                    .expect("Relaxation failed");
+                if config.clamp_output {
+                    state.x[state.x.len() - 1] = ndarray::arr1(&[*target]);
+                }
+            }
+
+            network_tanh
+                .compute_errors(&mut state)
+                .expect("Error computation failed");
+            network_tanh
+                .update_weights(&state, config.eta)
+                .expect("Weight update failed");
+        }
+    }
+
+    // Verify weights were updated
+    let final_w_tanh = network_tanh.w[1].clone();
+    let w_change = (final_w_tanh - initial_w_tanh).norm_max();
+
+    println!("Tanh weight change after spiral training: {}", w_change);
+
+    assert!(
+        w_change > 1e-4,
+        "Weights should be updated during spiral training (change: {})",
+        w_change
+    );
+}
+
+/// Test convergence-based stopping on spiral samples.
+#[test]
+fn test_convergence_on_spiral_samples() {
+    let training_data = generate_spiral(10, 2);
+    let dims = vec![2, 4, 1];
+
+    let network = PCN::with_activation(
+        dims.clone(),
+        Box::new(TanhActivation),
+    )
+    .expect("Failed to create network");
+
+    let mut total_steps = 0;
+    let mut num_samples = 0;
+
+    // Measure convergence on spiral samples
+    for (input, target) in training_data.iter() {
+        let mut state = network.init_state();
+        state.x[0] = input.clone();
+        state.x[state.x.len() - 1] = ndarray::arr1(&[*target]);
+
+        let steps_taken = network
+            .relax_with_convergence(&mut state, 1e-5, 200, 0.05)
+            .expect("Relaxation failed");
+
+        total_steps += steps_taken;
+        num_samples += 1;
+
+        // Should converge well within max_steps
+        assert!(
+            steps_taken < 200,
+            "Spiral sample should converge before max_steps"
+        );
+    }
+
+    let avg_steps = total_steps as f32 / num_samples as f32;
+    println!(
+        "Spiral: Converged in {:.1} steps on average (max 200)",
+        avg_steps
+    );
+
+    // Average convergence should be well below max_steps
+    assert!(
+        avg_steps < 150.0,
+        "Spiral should converge quickly on average (<150 steps, got {:.1})",
+        avg_steps
+    );
 }

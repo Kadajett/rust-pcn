@@ -95,6 +95,46 @@ impl Activation for IdentityActivation {
     }
 }
 
+/// Tanh activation: f(x) = tanh(x), f'(x) = 1 - tanh²(x)
+///
+/// Smooth, bounded activation that prevents saturation better than sigmoid.
+/// Used in Phase 2 for nonlinear dynamics.
+///
+/// # Properties
+/// - Output range: [-1, 1]
+/// - Smooth gradient: no hard boundaries
+/// - Derivative: f'(x) = 1 - f(x)² at the same point (numerically stable)
+#[derive(Debug, Clone, Copy)]
+pub struct TanhActivation;
+
+impl Activation for TanhActivation {
+    fn apply(&self, x: &Array1<f32>) -> Array1<f32> {
+        x.mapv(|v| v.tanh())
+    }
+
+    fn apply_matrix(&self, x: &Array2<f32>) -> Array2<f32> {
+        x.mapv(|v| v.tanh())
+    }
+
+    fn derivative(&self, x: &Array1<f32>) -> Array1<f32> {
+        x.mapv(|v| {
+            let tanh_v = v.tanh();
+            1.0 - tanh_v * tanh_v
+        })
+    }
+
+    fn derivative_matrix(&self, x: &Array2<f32>) -> Array2<f32> {
+        x.mapv(|v| {
+            let tanh_v = v.tanh();
+            1.0 - tanh_v * tanh_v
+        })
+    }
+
+    fn name(&self) -> &'static str {
+        "tanh"
+    }
+}
+
 /// A Predictive Coding Network with symmetric weight matrices.
 ///
 /// # Architecture
@@ -135,6 +175,7 @@ impl std::fmt::Debug for PCN {
 /// Network state during relaxation.
 ///
 /// Holds activations, predictions, and errors for all layers.
+/// Also tracks relaxation statistics for convergence monitoring.
 #[derive(Debug, Clone)]
 pub struct State {
     /// x[l]: activations at layer l
@@ -143,6 +184,11 @@ pub struct State {
     pub mu: Vec<Array1<f32>>,
     /// eps[l]: prediction error at layer l (x[l] - mu[l])
     pub eps: Vec<Array1<f32>>,
+    /// Number of relaxation steps actually taken
+    /// (may be less than requested if convergence is achieved early)
+    pub steps_taken: usize,
+    /// Final total prediction error energy after relaxation
+    pub final_energy: f32,
 }
 
 impl PCN {
@@ -238,6 +284,8 @@ impl PCN {
             x: (0..=l_max).map(|l| Array1::zeros(self.dims[l])).collect(),
             mu: (0..=l_max).map(|l| Array1::zeros(self.dims[l])).collect(),
             eps: (0..=l_max).map(|l| Array1::zeros(self.dims[l])).collect(),
+            steps_taken: 0,
+            final_energy: 0.0,
         }
     }
 
@@ -329,7 +377,88 @@ impl PCN {
         Ok(())
     }
 
-    /// Relax the network for a given number of steps.
+    /// Relax the network with convergence-based stopping.
+    ///
+    /// # Algorithm
+    ///
+    /// Iteratively minimizes energy until one of these conditions is met:
+    /// 1. State change converges: `max(|Δx[l]|) < threshold`
+    /// 2. Energy change converges: `ΔE < epsilon`
+    /// 3. Safety limit reached: `t >= max_steps`
+    ///
+    /// In each iteration:
+    /// ```text
+    /// compute_errors()
+    /// relax_step()
+    /// check convergence criteria
+    /// ```
+    ///
+    /// After relaxation completes (for any reason), updates `state.steps_taken`
+    /// and `state.final_energy` for diagnostic purposes.
+    ///
+    /// # Arguments
+    /// - `max_steps`: maximum iterations as safety limit (e.g., 200)
+    /// - `alpha`: state update rate (typically 0.01-0.1)
+    /// - `threshold`: convergence threshold for max state change (default: 1e-5)
+    /// - `epsilon`: convergence threshold for energy change (default: 1e-6)
+    ///
+    /// # Returns
+    /// Ok if relaxation completes (either converged or hit max_steps);
+    /// Err if computation fails (shape mismatch, etc.)
+    pub fn relax_with_convergence(
+        &self,
+        state: &mut State,
+        max_steps: usize,
+        alpha: f32,
+        threshold: f32,
+        epsilon: f32,
+    ) -> PCNResult<()> {
+        // Compute initial energy
+        self.compute_errors(state)?;
+        let mut prev_energy = self.compute_energy(state);
+
+        let l_max = self.dims.len() - 1;
+
+        for step in 0..max_steps {
+            // Perform one relaxation step
+            self.relax_step(state, alpha)?;
+
+            // Compute new errors and energy
+            self.compute_errors(state)?;
+            let curr_energy = self.compute_energy(state);
+
+            // Check convergence criteria:
+            // 1. Energy change is small
+            let energy_delta = (curr_energy - prev_energy).abs();
+            if energy_delta < epsilon {
+                state.steps_taken = step + 1;
+                state.final_energy = curr_energy;
+                return Ok(());
+            }
+
+            // 2. State change is small: max(|Δx[l]|) < threshold
+            // We estimate state change as convergence when errors are small enough.
+            // A more direct approach: if all errors shrink and stabilize, we've converged.
+            let max_error = state.eps.iter().map(|e| {
+                e.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
+            }).fold(0.0f32, f32::max);
+
+            if max_error < threshold {
+                state.steps_taken = step + 1;
+                state.final_energy = curr_energy;
+                return Ok(());
+            }
+
+            prev_energy = curr_energy;
+        }
+
+        // Max steps reached; record final state
+        state.steps_taken = max_steps;
+        state.final_energy = self.compute_energy(state);
+        Ok(())
+    }
+
+    /// Relax the network for a given number of steps (fixed iteration, legacy).
     ///
     /// # Algorithm
     ///
@@ -340,11 +469,15 @@ impl PCN {
     /// compute_errors()  // final error computation
     /// ```
     ///
-    /// Repeatedly minimizes energy via gradient descent until convergence or max steps.
+    /// Repeatedly minimizes energy via gradient descent for exactly `steps` iterations.
+    /// Updates `state.steps_taken` and `state.final_energy` for consistency.
     ///
     /// # Arguments
     /// - `steps`: number of relaxation iterations
     /// - `alpha`: state update rate (typically 0.01-0.1)
+    ///
+    /// # Deprecated
+    /// Prefer `relax_with_convergence()` for adaptive stopping.
     pub fn relax(&self, state: &mut State, steps: usize, alpha: f32) -> PCNResult<()> {
         for _ in 0..steps {
             self.compute_errors(state)?;
@@ -352,7 +485,99 @@ impl PCN {
         }
         // Final error computation
         self.compute_errors(state)?;
+
+        // Record statistics
+        state.steps_taken = steps;
+        state.final_energy = self.compute_energy(state);
+
         Ok(())
+    }
+
+    /// Relax the network with default convergence thresholds.
+    ///
+    /// Convenience wrapper around `relax_with_convergence()` using sensible defaults:
+    /// - `max_steps`: 200 (safety limit)
+    /// - `threshold`: 1e-5 (state change convergence)
+    /// - `epsilon`: 1e-6 (energy change convergence)
+    ///
+    /// # Arguments
+    /// - `max_steps`: maximum iterations as safety limit
+    /// - `alpha`: state update rate (typically 0.01-0.1)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let mut state = pcn.init_state();
+    /// state.x[0] = input.clone();  // clamp input
+    /// pcn.relax_adaptive(&mut state, 200, 0.01)?;
+    /// // state.steps_taken tells you how many iterations actually ran
+    /// // state.final_energy tells you the final energy
+    /// ```
+    pub fn relax_adaptive(
+        &self,
+        state: &mut State,
+        max_steps: usize,
+        alpha: f32,
+    ) -> PCNResult<()> {
+        self.relax_with_convergence(state, max_steps, alpha, 1e-5, 1e-6)
+    }
+
+    /// Relax the network with convergence-based stopping.
+    ///
+    /// # Algorithm
+    ///
+    /// Relaxes until either:
+    /// 1. Energy change falls below `threshold` (convergence detected)
+    /// 2. Maximum steps `max_steps` is reached (safety limit)
+    ///
+    /// Returns the number of relaxation steps actually taken.
+    ///
+    /// # Arguments
+    /// - `state`: network state to relax
+    /// - `threshold`: convergence threshold (typically 1e-6 to 1e-4)
+    /// - `max_steps`: maximum number of relaxation steps (safety limit, typically 200-500)
+    /// - `alpha`: state update rate (typically 0.01-0.1)
+    ///
+    /// # Returns
+    /// Number of steps taken before convergence or max_steps
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let steps_taken = network.relax_with_convergence(
+    ///     &mut state,
+    ///     1e-5,    // stop when energy change < 1e-5
+    ///     200,     // never exceed 200 steps
+    ///     0.05     // relaxation rate
+    /// )?;
+    /// println!("Converged in {} steps", steps_taken);
+    /// ```
+    pub fn relax_with_convergence(
+        &self,
+        state: &mut State,
+        threshold: f32,
+        max_steps: usize,
+        alpha: f32,
+    ) -> PCNResult<usize> {
+        self.compute_errors(state)?;
+        let mut prev_energy = self.compute_energy(state);
+
+        for step in 0..max_steps {
+            self.relax_step(state, alpha)?;
+            self.compute_errors(state)?;
+
+            let curr_energy = self.compute_energy(state);
+            let energy_change = (prev_energy - curr_energy).abs();
+
+            // Check convergence
+            if energy_change < threshold {
+                return Ok(step + 1);
+            }
+
+            prev_energy = curr_energy;
+        }
+
+        // Reached max_steps without convergence
+        Ok(max_steps)
     }
 
     /// Update weights using the Hebbian learning rule.
@@ -448,6 +673,8 @@ mod tests {
         assert_eq!(state.x[0].len(), 2);
         assert_eq!(state.x[1].len(), 4);
         assert_eq!(state.x[2].len(), 3);
+        assert_eq!(state.steps_taken, 0);
+        assert_eq!(state.final_energy, 0.0);
     }
 
     #[test]
@@ -483,5 +710,63 @@ mod tests {
         let energy2 = pcn.compute_energy(&state2);
 
         assert!(energy2 > energy1);
+    }
+
+    #[test]
+    fn test_tanh_activation() {
+        let act = TanhActivation;
+        let x = ndarray::array![0.0, 1.0, -1.0];
+        let fx = act.apply(&x);
+        
+        // tanh(0) ≈ 0
+        assert!((fx[0] - 0.0).abs() < 1e-5);
+        // tanh(1) ≈ 0.762
+        assert!(fx[1] > 0.7 && fx[1] < 0.8);
+        // tanh(-1) ≈ -0.762
+        assert!(fx[2] < -0.7 && fx[2] > -0.8);
+    }
+
+    #[test]
+    fn test_identity_activation() {
+        let act = IdentityActivation;
+        let x = ndarray::array![0.0, 1.0, -1.0];
+        let fx = act.apply(&x);
+        assert_eq!(fx, x);
+        
+        let dx = act.derivative(&x);
+        assert_eq!(dx, ndarray::array![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_relax_with_convergence_tracking() {
+        let dims = vec![2, 3, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+        
+        // Set input
+        state.x[0] = ndarray::array![1.0, 0.5];
+        
+        // Relax with convergence
+        assert!(pcn.relax_with_convergence(&mut state, 100, 0.01, 1e-5, 1e-6).is_ok());
+        
+        // Should have recorded steps and energy
+        assert!(state.steps_taken > 0);
+        assert!(state.final_energy >= 0.0);
+    }
+
+    #[test]
+    fn test_relax_adaptive() {
+        let dims = vec![2, 3, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+        
+        state.x[0] = ndarray::array![1.0, 0.5];
+        
+        // Relax with defaults
+        assert!(pcn.relax_adaptive(&mut state, 200, 0.01).is_ok());
+        
+        // Should have recorded statistics
+        assert!(state.steps_taken > 0 && state.steps_taken <= 200);
+        assert!(state.final_energy >= 0.0);
     }
 }

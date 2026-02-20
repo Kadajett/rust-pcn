@@ -22,7 +22,7 @@ pub mod data;
 pub mod training;
 pub mod utils;
 
-pub use core::{PCN, State, Activation, IdentityActivation, PCNError, PCNResult};
+pub use core::{Activation, IdentityActivation, PCNError, PCNResult, State, PCN};
 
 #[derive(Debug, Clone)]
 pub struct Config {

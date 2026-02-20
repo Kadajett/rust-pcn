@@ -46,12 +46,12 @@ Where `μ^ℓ-1` is the **top-down prediction** from layer ℓ:
 States evolve via gradient descent on energy. For internal layers ℓ ∈ [1, L-1]:
 
 ```
-dx^ℓ/dt = -ε^ℓ + (W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ)
+dx^ℓ/dt = -ε^ℓ + (W^ℓ)^T ε^ℓ-1 ⊙ f'(x^ℓ)
 ```
 
 In discrete form (with step size α):
 ```
-x^ℓ += α * (-ε^ℓ + (W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ))
+x^ℓ += α * (-ε^ℓ + (W^ℓ)^T ε^ℓ-1 ⊙ f'(x^ℓ))
 ```
 
 **Interpretation:**
@@ -154,7 +154,9 @@ Each neuron update only depends on:
 1. Its current state `x^ℓ`
 2. Errors from its own layer `ε^ℓ`
 3. Errors from the layer below `ε^ℓ-1`
-4. Weights connecting to adjacent layers
+4. Weight matrix `W^ℓ` (which connects layer ℓ to layer ℓ-1)
+
+**Note on indexing:** The weight matrix `W^ℓ` predicts layer ℓ-1 from layer ℓ. In the state update, we use `(W^ℓ)^T` to backproject errors from layer ℓ-1 to influence the update of layer ℓ. This is the prediction-error pathway.
 
 **No layer synchronization required.** States can update in any order; still converges to the same equilibrium.
 

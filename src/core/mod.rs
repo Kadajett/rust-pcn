@@ -17,7 +17,7 @@
 //!
 //! Each layer predicts the one below it; neurons adjust to minimize local errors.
 
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Axis};
 use ndarray_rand::RandomExt;
 use rand::distributions::Uniform;
 use std::error::Error;
@@ -107,7 +107,6 @@ impl Activation for IdentityActivation {
 /// # Weight Initialization
 ///
 /// Weights are initialized uniformly in [-0.05, 0.05] to break symmetry without excessive scale.
-#[derive(Debug, Clone)]
 pub struct PCN {
     /// Network layer dimensions: [d0, d1, ..., dL]
     pub dims: Vec<usize>,
@@ -117,6 +116,20 @@ pub struct PCN {
     pub b: Vec<Array1<f32>>,
     /// Activation function applied to all layers
     pub activation: Box<dyn Activation>,
+}
+
+impl std::fmt::Debug for PCN {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PCN")
+            .field("dims", &self.dims)
+            .field("w", &format!("<{} weight matrices>", self.w.len()))
+            .field("b", &format!("<{} bias vectors>", self.b.len()))
+            .field(
+                "activation",
+                &format!("<{} activation>", self.activation.name()),
+            )
+            .finish()
+    }
 }
 
 /// Network state during relaxation.
@@ -174,7 +187,12 @@ impl PCN {
 
         let activation = Box::new(IdentityActivation);
 
-        Ok(Self { dims, w, b, activation })
+        Ok(Self {
+            dims,
+            w,
+            b,
+            activation,
+        })
     }
 
     /// Create a new PCN with a custom activation function.
@@ -200,7 +218,12 @@ impl PCN {
             b.push(Array1::zeros(out_dim));
         }
 
-        Ok(Self { dims, w, b, activation })
+        Ok(Self {
+            dims,
+            w,
+            b,
+            activation,
+        })
     }
 
     /// Returns the network's layer dimensions.
@@ -212,15 +235,9 @@ impl PCN {
     pub fn init_state(&self) -> State {
         let l_max = self.dims.len() - 1;
         State {
-            x: (0..=l_max)
-                .map(|l| Array1::zeros(self.dims[l]))
-                .collect(),
-            mu: (0..=l_max)
-                .map(|l| Array1::zeros(self.dims[l]))
-                .collect(),
-            eps: (0..=l_max)
-                .map(|l| Array1::zeros(self.dims[l]))
-                .collect(),
+            x: (0..=l_max).map(|l| Array1::zeros(self.dims[l])).collect(),
+            mu: (0..=l_max).map(|l| Array1::zeros(self.dims[l])).collect(),
+            eps: (0..=l_max).map(|l| Array1::zeros(self.dims[l])).collect(),
         }
     }
 
@@ -295,7 +312,7 @@ impl PCN {
             // W[l] predicts layer l-1, so W[l]^T has shape (d_l, d_{l-1}).
             // eps[l-1] has shape (d_{l-1}).
             // W[l]^T @ eps[l-1] has shape (d_l). ✓
-            
+
             let feedback = self.w[l].t().dot(&state.eps[l - 1]);
 
             // Term 3: f'(x[l]) (derivative of activation at layer l)
@@ -368,10 +385,13 @@ impl PCN {
             // eps[l-1]: shape (d_{l-1})
             // f(x[l]): shape (d_l)
             // outer product: shape (d_{l-1}, d_l) ✓
-            let delta_w = ndarray::outer(&state.eps[l - 1], &f_x_l);
+            // Manual outer product: a[:, None] * b[None, :]
+            let eps_col = state.eps[l - 1].view().insert_axis(Axis(1));
+            let fx_row = f_x_l.view().insert_axis(Axis(0));
+            let delta_w = &eps_col * &fx_row;
 
             // Weight update: w[l] += eta * delta_w
-            self.w[l] = &self.w[l] + eta * &delta_w;
+            self.w[l] += &(eta * &delta_w);
 
             // Bias update: b[l-1] += eta * eps[l-1]
             self.b[l - 1] = &self.b[l - 1] + eta * &state.eps[l - 1];
@@ -441,10 +461,10 @@ mod tests {
         let dims = vec![2, 3, 2];
         let pcn = PCN::new(dims).unwrap();
         let mut state = pcn.init_state();
-        
+
         // Set some input
         state.x[0] = ndarray::array![1.0, 0.5];
-        
+
         // Compute errors should not panic
         assert!(pcn.compute_errors(&mut state).is_ok());
     }
@@ -453,15 +473,15 @@ mod tests {
     fn test_energy_increases_with_error() {
         let dims = vec![2, 3, 2];
         let pcn = PCN::new(dims).unwrap();
-        let mut state1 = pcn.init_state();
+        let state1 = pcn.init_state();
         let mut state2 = pcn.init_state();
-        
+
         // Set up state2 with larger errors
         state2.eps[0] = ndarray::array![5.0, 5.0];
-        
+
         let energy1 = pcn.compute_energy(&state1);
         let energy2 = pcn.compute_energy(&state2);
-        
+
         assert!(energy2 > energy1);
     }
 }

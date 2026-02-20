@@ -1,8 +1,8 @@
 //! Training loops, convergence checks, and metrics.
 
-use ndarray::Array1;
 use crate::core::PCN;
 use crate::Config;
+use ndarray::Array1;
 
 /// Metrics computed during training.
 #[derive(Debug, Clone)]

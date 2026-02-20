@@ -58,7 +58,7 @@ For each layer ℓ ∈ [1..L]:
 ### 2) State Dynamics (Relaxation)
 For internal layers ℓ ∈ [1..L-1]:
 ```
-x^ℓ += α * (-ε^ℓ + (W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ))
+x^ℓ += α * (-ε^ℓ + (W^ℓ)^T ε^ℓ-1 ⊙ f'(x^ℓ))
 ```
 
 Important: The `f'(x^ℓ)` factor shows up when your prediction uses `f(x^ℓ)`.

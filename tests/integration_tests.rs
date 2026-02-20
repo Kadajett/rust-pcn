@@ -6,8 +6,8 @@
 //! - Accuracy reaches target thresholds
 //! - Training is reproducible and stable
 
-use pcn::{PCN, Config};
 use approx::assert_abs_diff_eq;
+use pcn::{Config, PCN};
 
 /// Helper function to clamp a value to [0, 1]
 fn clamp_01(x: f32) -> f32 {
@@ -277,10 +277,7 @@ fn test_training_stability_with_small_eta() {
         }
     }
 
-    assert!(
-        !diverged,
-        "Training with eta=0.001 should not diverge"
-    );
+    assert!(!diverged, "Training with eta=0.001 should not diverge");
 }
 
 /// Test convergence on a linearly separable problem.
@@ -512,7 +509,10 @@ fn test_deep_network_training() {
         }
         network.compute_errors(&mut state);
 
-        assert!(state.x[state.x.len() - 1][0].is_finite(), "Output should be finite");
+        assert!(
+            state.x[state.x.len() - 1][0].is_finite(),
+            "Output should be finite"
+        );
     }
 }
 
@@ -529,10 +529,18 @@ fn test_deterministic_error_computation() {
 
     // Compute errors twice
     network.compute_errors(&mut state);
-    let errors_first = vec![state.eps[0].clone(), state.eps[1].clone(), state.eps[2].clone()];
+    let errors_first = vec![
+        state.eps[0].clone(),
+        state.eps[1].clone(),
+        state.eps[2].clone(),
+    ];
 
     network.compute_errors(&mut state);
-    let errors_second = vec![state.eps[0].clone(), state.eps[1].clone(), state.eps[2].clone()];
+    let errors_second = vec![
+        state.eps[0].clone(),
+        state.eps[1].clone(),
+        state.eps[2].clone(),
+    ];
 
     // Should be identical
     for (e1, e2) in errors_first.iter().zip(errors_second.iter()) {

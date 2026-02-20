@@ -7,15 +7,15 @@
 //! - Energy non-negativity and bounds
 //! - Edge cases: zero inputs, single neurons, small networks
 
-use pcn::{PCN, State};
 use approx::assert_abs_diff_eq;
+use pcn::{State, PCN};
 
 /// Test that a 2-layer network correctly computes prediction errors.
 ///
 /// A 2-layer network has:
 /// - Layer 0 (input): d0 neurons
 /// - Layer 1 (output): d1 neurons
-/// 
+///
 /// With identity activation, error computation is:
 /// ε^0 = x^0 - (W^1 f(x^1) + b^0) = x^0 - (W^1 x^1 + b^0)
 #[test]
@@ -30,7 +30,7 @@ fn test_error_computation_2layer() {
 
     // Manually set weights for testing
     pcn.w[1] = ndarray::arr2(&[
-        [0.1, 0.2, 0.3],    // W[1] shape (2, 3): predicts layer 0 from layer 1
+        [0.1, 0.2, 0.3], // W[1] shape (2, 3): predicts layer 0 from layer 1
         [0.4, 0.5, 0.6],
     ]);
     pcn.b[0] = ndarray::arr1(&[0.01, 0.02]);
@@ -259,10 +259,7 @@ fn test_hebbian_weight_update() {
     // Verify weight update: w[1] += eta * (eps[0] ⊗ f(x[1]))
     // f(x[1]) = x[1] = [0.5, -0.5, 1.0] (identity activation)
     // eps[0] ⊗ f(x[1]) = [[0.05, -0.05, 0.1], [0.1, -0.1, 0.2]]
-    let expected_delta_w = ndarray::arr2(&[
-        [0.05, -0.05, 0.1],
-        [0.1, -0.1, 0.2],
-    ]);
+    let expected_delta_w = ndarray::arr2(&[[0.05, -0.05, 0.1], [0.1, -0.1, 0.2]]);
 
     let expected_w1 = initial_w1 + eta * expected_delta_w;
     for i in 0..2 {
@@ -286,7 +283,7 @@ fn test_energy_formula_verification() {
     let mut state = pcn.init_state();
 
     // Set specific errors
-    state.eps[0] = ndarray::arr1(&[3.0, 4.0]);  // norm = 5, sq_norm = 25
+    state.eps[0] = ndarray::arr1(&[3.0, 4.0]); // norm = 5, sq_norm = 25
     state.eps[1] = ndarray::arr1(&[1.0, 0.0]); // norm = 1, sq_norm = 1
 
     let energy = pcn.compute_energy(&state);
@@ -315,7 +312,10 @@ fn test_energy_bounded() {
     // = 0.25 + 0.09 + 0.64 + 1 + 0.01 + 0.25 + 0.04 + 0.49 + 0.16 + 0.36 = 3.29
     // E = 0.5 * 3.29 = 1.645
     assert!(energy <= 2.0, "Energy should be bounded for bounded errors");
-    assert!(energy > 0.0, "Energy should be positive for non-zero errors");
+    assert!(
+        energy > 0.0,
+        "Energy should be positive for non-zero errors"
+    );
 }
 
 /// Test initialization: zero initial state

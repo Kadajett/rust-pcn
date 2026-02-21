@@ -58,8 +58,12 @@ struct Args {
     eta: f32,
 
     /// Save checkpoint every N epochs
-    #[arg(long, default_value_t = 5)]
+    #[arg(long, default_value_t = 10)]
     checkpoint_every: usize,
+
+    /// Run full evaluation every N epochs (0 = every epoch for backward compat)
+    #[arg(long, default_value_t = 5)]
+    eval_every: usize,
 
     /// Sliding window size for input
     #[arg(long, default_value_t = 16)]
@@ -85,7 +89,7 @@ struct Args {
     #[arg(long, default_value_t = 0)]
     max_samples_per_book: usize,
 
-    /// Use GPU acceleration (wgpu backend)
+    /// Use GPU acceleration (wgpu or CUDA backend, selected at compile time)
     #[arg(long, default_value_t = false)]
     gpu: bool,
 
@@ -132,6 +136,10 @@ struct Args {
     /// SEAL: blend factor for boundary resets (0=full reset, 1=no reset)
     #[arg(long, default_value_t = 0.5)]
     seal_boundary_blend: f32,
+
+    /// SEAL: enable adaptive sensitivity scaling from error variance
+    #[arg(long, default_value_t = false)]
+    seal_adaptive_sensitivity: bool,
 }
 
 /// Per-book data: separate train and eval sets.
@@ -170,6 +178,7 @@ fn main() {
             epsilon: 1e-6,
             reset_on_document_boundary: args.seal_boundary_reset,
             boundary_reset_blend: args.seal_boundary_blend,
+            adaptive_sensitivity: args.seal_adaptive_sensitivity,
         })
     } else {
         None
@@ -257,9 +266,19 @@ fn main() {
     }
     eprintln!("  Metrics: {}", args.metrics_file.display());
     if args.gpu {
-        eprintln!("  Backend: GPU (wgpu)");
+        if cfg!(feature = "cuda") {
+            eprintln!("  Backend: GPU (CUDA)");
+        } else {
+            eprintln!("  Backend: GPU (wgpu)");
+        }
     } else {
         eprintln!("  Backend: CPU (Rayon)");
+    }
+    if args.eval_every > 0 {
+        eprintln!(
+            "  Eval every: {} epochs (checkpoint every {})",
+            args.eval_every, args.checkpoint_every
+        );
     }
     if args.early_stop_patience > 0 {
         eprintln!("  Early stopping: patience={}", args.early_stop_patience);
@@ -277,8 +296,8 @@ fn main() {
             sc.ema_decay, sc.sensitivity, sc.min_mod, sc.max_mod
         );
         eprintln!(
-            "    boundary_reset={}, blend={}",
-            sc.reset_on_document_boundary, sc.boundary_reset_blend
+            "    boundary_reset={}, blend={}, adaptive_sensitivity={}",
+            sc.reset_on_document_boundary, sc.boundary_reset_blend, sc.adaptive_sensitivity
         );
     }
     eprintln!();
@@ -289,7 +308,7 @@ fn main() {
     } else {
         None
     };
-    let mut gpu_pcn: Option<GpuPcn<burn::backend::wgpu::Wgpu>> = if let Some(ref dev) = device {
+    let mut gpu_pcn: Option<GpuPcn<gpu::GpuBackend>> = if let Some(ref dev) = device {
         Some(GpuPcn::from_cpu(&pcn, dev))
     } else {
         None
@@ -516,19 +535,12 @@ fn main() {
 
                 match epoch_metrics {
                     Ok(metrics) => {
-                        if let Some(ref gpu) = gpu_pcn {
-                            gpu.to_cpu(&mut pcn);
-                        }
+                        let should_eval = args.eval_every == 0
+                            || epoch % args.eval_every == 0
+                            || epoch == args.epochs;
+                        let should_checkpoint = epoch % args.checkpoint_every == 0;
 
-                        let overall_accuracy =
-                            compute_eval_accuracy(&pcn, &books, &section_config);
-                        let layer_errors = compute_layer_errors(
-                            &pcn,
-                            &all_train_inputs,
-                            &all_train_targets,
-                            &section_config,
-                        );
-
+                        // LR decay applies every epoch regardless of eval
                         if args.lr_decay < 1.0 {
                             let new_eta =
                                 (section_config.eta * args.lr_decay).max(args.min_eta);
@@ -537,88 +549,194 @@ fn main() {
                             }
                         }
 
-                        if overall_accuracy > best_accuracy {
-                            best_accuracy = overall_accuracy;
-                            epochs_without_improvement = 0;
-                        } else {
-                            epochs_without_improvement += 1;
-                        }
+                        if should_eval {
+                            // ── Full eval path ──
+                            let (eval_inputs, eval_targets) =
+                                combine_book_data(&books, false);
 
-                        let lr_info = if args.lr_decay < 1.0 {
-                            format!(" | eta: {:.6}", section_config.eta)
-                        } else {
-                            String::new()
-                        };
+                            let (overall_accuracy, layer_errors) =
+                                if let Some(ref gpu) = gpu_pcn {
+                                    // GPU eval — no to_cpu needed
+                                    let acc = gpu::compute_accuracy_gpu(
+                                        gpu,
+                                        &eval_inputs,
+                                        &eval_targets,
+                                        &section_config,
+                                        1000,
+                                    );
+                                    let errs = gpu::compute_layer_errors_eval_gpu(
+                                        gpu,
+                                        &all_train_inputs,
+                                        &all_train_targets,
+                                        &section_config,
+                                        100,
+                                    );
+                                    (acc, errs)
+                                } else {
+                                    // CPU fallback
+                                    let acc = compute_eval_accuracy(
+                                        &pcn,
+                                        &books,
+                                        &section_config,
+                                    );
+                                    let errs = compute_layer_errors(
+                                        &pcn,
+                                        &all_train_inputs,
+                                        &all_train_targets,
+                                        &section_config,
+                                    );
+                                    (acc, errs)
+                                };
 
-                        eprintln!(
-                            "  Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s{}",
-                            epoch,
-                            metrics.avg_loss,
-                            overall_accuracy * 100.0,
-                            total_train_samples,
-                            elapsed,
-                            lr_info,
-                        );
+                            if overall_accuracy > best_accuracy {
+                                best_accuracy = overall_accuracy;
+                                epochs_without_improvement = 0;
+                            } else {
+                                epochs_without_improvement += 1;
+                            }
 
-                        let mut epoch_event = serde_json::json!({
-                            "type": "epoch",
-                            "round": round,
-                            "section": section + 1,
-                            "epoch": epoch,
-                            "avg_energy": metrics.avg_loss,
-                            "accuracy": overall_accuracy,
-                            "best_accuracy": best_accuracy,
-                            "layer_errors": layer_errors,
-                            "elapsed_secs": elapsed,
-                            "num_samples": total_train_samples,
-                            "num_books": books.len(),
-                            "eta": section_config.eta,
-                            "epochs_without_improvement": epochs_without_improvement,
-                        });
-
-                        // Add SEAL diagnostics if enabled
-                        if let Some(ref ss) = surprise_state {
-                            epoch_event["seal"] = serde_json::json!({
-                                "modulation": ss.last_modulation,
-                                "surprise": ss.last_surprise,
-                                "expected_error": ss.expected_error,
-                            });
-                        }
-
-                        writeln!(metrics_file, "{}", epoch_event)
-                            .expect("Failed to write metrics");
-
-                        for book in &books {
-                            let book_accuracy =
-                                compute_book_accuracy(&pcn, book, &section_config);
-                            let predictions = generate_sample_predictions(
-                                &pcn,
-                                book,
-                                &vocab,
-                                &section_config,
-                                3,
-                            );
+                            let lr_info = if args.lr_decay < 1.0 {
+                                format!(" | eta: {:.6}", section_config.eta)
+                            } else {
+                                String::new()
+                            };
 
                             eprintln!(
-                                "    {} accuracy: {:.2}%",
-                                book.name,
-                                book_accuracy * 100.0
+                                "  Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s{}",
+                                epoch,
+                                metrics.avg_loss,
+                                overall_accuracy * 100.0,
+                                total_train_samples,
+                                elapsed,
+                                lr_info,
                             );
 
-                            let eval_event = serde_json::json!({
-                                "type": "eval",
+                            let mut epoch_event = serde_json::json!({
+                                "type": "epoch",
                                 "round": round,
                                 "section": section + 1,
                                 "epoch": epoch,
-                                "book": book.name,
-                                "accuracy": book_accuracy,
-                                "sample_predictions": predictions,
+                                "avg_energy": metrics.avg_loss,
+                                "accuracy": overall_accuracy,
+                                "best_accuracy": best_accuracy,
+                                "layer_errors": layer_errors,
+                                "elapsed_secs": elapsed,
+                                "num_samples": total_train_samples,
+                                "num_books": books.len(),
+                                "eta": section_config.eta,
+                                "epochs_without_improvement": epochs_without_improvement,
                             });
-                            writeln!(metrics_file, "{}", eval_event)
-                                .expect("Failed to write eval metrics");
+
+                            if let Some(ref ss) = surprise_state {
+                                epoch_event["seal"] = serde_json::json!({
+                                    "modulation": ss.last_modulation,
+                                    "surprise": ss.last_surprise,
+                                    "expected_error": ss.expected_error,
+                                    "error_variance": ss.error_variance,
+                                });
+                            }
+
+                            writeln!(metrics_file, "{}", epoch_event)
+                                .expect("Failed to write metrics");
+
+                            // Per-book eval
+                            for book in &books {
+                                let book_accuracy = if let Some(ref gpu) = gpu_pcn {
+                                    gpu::compute_accuracy_gpu(
+                                        gpu,
+                                        &book.eval_inputs,
+                                        &book.eval_targets,
+                                        &section_config,
+                                        1000,
+                                    )
+                                } else {
+                                    compute_book_accuracy(&pcn, book, &section_config)
+                                };
+
+                                // Sample predictions: use GPU batch inference if available
+                                let predictions = if let Some(ref gpu) = gpu_pcn {
+                                    generate_sample_predictions_gpu(
+                                        gpu,
+                                        book,
+                                        &vocab,
+                                        &section_config,
+                                        3,
+                                    )
+                                } else {
+                                    generate_sample_predictions(
+                                        &pcn,
+                                        book,
+                                        &vocab,
+                                        &section_config,
+                                        3,
+                                    )
+                                };
+
+                                eprintln!(
+                                    "    {} accuracy: {:.2}%",
+                                    book.name,
+                                    book_accuracy * 100.0
+                                );
+
+                                let eval_event = serde_json::json!({
+                                    "type": "eval",
+                                    "round": round,
+                                    "section": section + 1,
+                                    "epoch": epoch,
+                                    "book": book.name,
+                                    "accuracy": book_accuracy,
+                                    "sample_predictions": predictions,
+                                });
+                                writeln!(metrics_file, "{}", eval_event)
+                                    .expect("Failed to write eval metrics");
+                            }
+                        } else {
+                            // ── Fast path: no eval, just log energy ──
+                            let lr_info = if args.lr_decay < 1.0 {
+                                format!(" | eta: {:.6}", section_config.eta)
+                            } else {
+                                String::new()
+                            };
+
+                            eprintln!(
+                                "  Epoch {:3} | energy: {:.4} | samples: {} | {:.1}s{}",
+                                epoch,
+                                metrics.avg_loss,
+                                total_train_samples,
+                                elapsed,
+                                lr_info,
+                            );
+
+                            let mut epoch_event = serde_json::json!({
+                                "type": "epoch",
+                                "round": round,
+                                "section": section + 1,
+                                "epoch": epoch,
+                                "avg_energy": metrics.avg_loss,
+                                "elapsed_secs": elapsed,
+                                "num_samples": total_train_samples,
+                                "num_books": books.len(),
+                                "eta": section_config.eta,
+                            });
+
+                            if let Some(ref ss) = surprise_state {
+                                epoch_event["seal"] = serde_json::json!({
+                                    "modulation": ss.last_modulation,
+                                    "surprise": ss.last_surprise,
+                                    "expected_error": ss.expected_error,
+                                    "error_variance": ss.error_variance,
+                                });
+                            }
+
+                            writeln!(metrics_file, "{}", epoch_event)
+                                .expect("Failed to write metrics");
                         }
 
-                        if epoch % args.checkpoint_every == 0 {
+                        // Checkpoint: only time we need GPU→CPU weight copy
+                        if should_checkpoint {
+                            if let Some(ref gpu) = gpu_pcn {
+                                gpu.to_cpu(&mut pcn);
+                            }
                             let ckpt_path = args.checkpoint_dir.join(format!(
                                 "round_{:03}_epoch_{:03}.json",
                                 round, epoch
@@ -628,7 +746,7 @@ fn main() {
                                 &ckpt_path,
                                 epoch,
                                 metrics.avg_loss,
-                                overall_accuracy,
+                                best_accuracy,
                                 completed_books.clone(),
                                 surprise_state.as_ref(),
                             ) {
@@ -688,6 +806,11 @@ fn main() {
         // All sections done — mark books as completed
         completed_books.extend(chunk_names.clone());
 
+        // Ensure CPU weights are current before book checkpoint
+        if let Some(ref gpu) = gpu_pcn {
+            gpu.to_cpu(&mut pcn);
+        }
+
         // Save book-completion checkpoint
         let book_ckpt_path = args
             .checkpoint_dir
@@ -711,6 +834,11 @@ fn main() {
             Err(e) => eprintln!("  Warning: book checkpoint save failed: {e}"),
         }
         eprintln!();
+    }
+
+    // Ensure CPU weights are current before final checkpoint
+    if let Some(ref gpu) = gpu_pcn {
+        gpu.to_cpu(&mut pcn);
     }
 
     // Final checkpoint
@@ -1025,6 +1153,78 @@ fn compute_layer_errors(
 
     #[allow(clippy::cast_precision_loss)]
     layer_error_sums.iter().map(|s| s / n as f32).collect()
+}
+
+/// Generate sample predictions using GPU batch inference.
+fn generate_sample_predictions_gpu(
+    gpu_pcn: &GpuPcn<gpu::GpuBackend>,
+    book: &BookData,
+    vocab: &Vocabulary,
+    config: &Config,
+    count: usize,
+) -> Vec<serde_json::Value> {
+    let n = book.eval_inputs.nrows();
+    if n == 0 {
+        return vec![];
+    }
+
+    let step = n / count.min(n).max(1);
+    let sample_indices: Vec<usize> = (0..n).step_by(step.max(1)).take(count).collect();
+    let n_samples = sample_indices.len();
+    if n_samples == 0 {
+        return vec![];
+    }
+
+    // Build small batch of sample inputs
+    let cols = book.eval_inputs.ncols();
+    let mut batch_inputs = ndarray::Array2::zeros((n_samples, cols));
+    for (i, &idx) in sample_indices.iter().enumerate() {
+        batch_inputs.row_mut(i).assign(&book.eval_inputs.row(idx));
+    }
+
+    // GPU batch inference
+    let batch_predictions = gpu::predict_batch_gpu(gpu_pcn, &batch_inputs, config);
+
+    // Decode predictions on CPU
+    let mut predictions = Vec::new();
+    for (i, &idx) in sample_indices.iter().enumerate() {
+        let input = book.eval_inputs.row(idx);
+        let target = book.eval_targets.row(idx);
+
+        let window_size = input.len() / vocab.size();
+        let mut input_chars = String::new();
+        for w in 0..window_size {
+            let start = w * vocab.size();
+            let end = start + vocab.size();
+            let mut best_idx = 0;
+            let mut best_val = f32::NEG_INFINITY;
+            for j in start..end {
+                if input[j] > best_val {
+                    best_val = input[j];
+                    best_idx = j - start;
+                }
+            }
+            if let Some(c) = vocab.index_to_char(best_idx) {
+                input_chars.push(c);
+            }
+        }
+
+        let pred_row = batch_predictions.row(i);
+        let pred_char = vocab
+            .decode_argmax(&pred_row.to_owned())
+            .unwrap_or('?');
+        let target_arr = target.to_owned();
+        let target_char = vocab.decode_argmax(&target_arr).unwrap_or('?');
+
+        predictions.push(serde_json::json!({
+            "input": input_chars,
+            "predicted": pred_char.to_string(),
+            "expected": target_char.to_string(),
+            "correct": pred_char == target_char,
+        }));
+    }
+
+    predictions
 }
 
 /// Generate sample predictions for the dashboard log.

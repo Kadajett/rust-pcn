@@ -22,9 +22,14 @@ serde_json = "1.0"
 rayon = "1.8"
 clap = { version = "4", features = ["derive"] }
 chrono = "0.4"
-burn = { version = "0.16", features = ["wgpu", "ndarray"] }
+burn = { version = "0.16", features = ["ndarray"] }
 # For BLAS (optional, for performance)
 # ndarray-linalg = { version = "0.16", features = ["openblas-static"] }
+
+[features]
+default = ["wgpu"]
+wgpu = ["burn/wgpu"]
+cuda = ["burn/cuda-jit"]
 
 [[bin]]
 name = "pcn-train"

@@ -65,6 +65,9 @@ pub struct SealConfig {
     pub reset_on_document_boundary: bool,
     /// Blend factor for boundary resets (0 = full reset, 1 = no reset). Default 0.5.
     pub boundary_reset_blend: f32,
+    /// Enable adaptive sensitivity scaling from error variance. Default false.
+    /// When enabled, effective_sensitivity = base * (1 + sqrt(variance)).clamp(0.5, 3.0)
+    pub adaptive_sensitivity: bool,
 }
 
 impl Default for SealConfig {
@@ -77,6 +80,7 @@ impl Default for SealConfig {
             epsilon: 1e-6,
             reset_on_document_boundary: true,
             boundary_reset_blend: 0.5,
+            adaptive_sensitivity: false,
         }
     }
 }

@@ -1,10 +1,11 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: pcn-train
+  name: pcn-train-seal
   namespace: pcn-train
   labels:
     app: pcn-train
+    variant: seal
 spec:
   runtimeClassName: nvidia
   restartPolicy: Never
@@ -23,23 +24,9 @@ spec:
     command: ["/bin/bash", "-c"]
     args:
     - |
-      echo "=== PCN Training v2: expanded vocab, case-sensitive, prose-first ==="
+      echo "=== PCN Training: SEAL (surprise-gated learning) ==="
       echo "Starting at $(date)"
       echo ""
-      echo "Setting up Vulkan for wgpu..."
-      apt-get update -qq && apt-get install -y -qq libvulkan1 > /dev/null 2>&1
-      # Create nvidia Vulkan ICD pointing at the driver lib injected by nvidia runtime
-      mkdir -p /usr/share/vulkan/icd.d
-      cat > /usr/share/vulkan/icd.d/nvidia_icd.json <<ICDJSON
-      {
-        "file_format_version": "1.0.0",
-        "ICD": {
-          "library_path": "libGLX_nvidia.so.0",
-          "api_version": "1.3"
-        }
-      }
-      ICDJSON
-      echo "Vulkan ICD written"
       echo "GPU check:"
       nvidia-smi || echo "No nvidia-smi"
       echo ""
@@ -47,13 +34,20 @@ spec:
       cd /workspace
       exec ./target/release/pcn-train \
         --books-dir data/books \
-        --checkpoint-dir data/checkpoints \
-        --metrics-file data/output/metrics.jsonl \
+        --checkpoint-dir data/checkpoints/seal \
+        --metrics-file data/output/metrics-seal.jsonl \
         --gpu \
         --epochs 20 \
         --max-samples-per-book 10000 \
-        --batch-size 1024 \
-        --books-per-round 1
+        --batch-size 512 \
+        --books-per-round 1 \
+        --seal \
+        --seal-ema-decay 0.1 \
+        --seal-sensitivity 5.0 \
+        --seal-min-mod 0.3 \
+        --seal-max-mod 1.7 \
+        --seal-adaptive-sensitivity \
+        --eval-every 5
     env:
     - name: TZ
       value: America/New_York
@@ -61,23 +55,39 @@ spec:
       value: compute,utility
     - name: NVIDIA_VISIBLE_DEVICES
       value: all
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
     - name: RUST_BACKTRACE
       value: "1"
+    - name: LD_LIBRARY_PATH
+      value: /usr/local/cuda-13.0/targets/x86_64-linux/lib:/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib
     resources:
       requests:
-        cpu: "4"
-        memory: 4Gi
-        nvidia.com/gpu: "1"
+        cpu: "2"
+        memory: 2Gi
       limits:
-        cpu: "8"
-        memory: 32Gi
-        nvidia.com/gpu: "1"
+        cpu: "4"
+        memory: 16Gi
     volumeMounts:
     - name: workspace
       mountPath: /workspace
+    - name: cuda-13-0
+      mountPath: /usr/local/cuda-13.0
+      readOnly: true
+    - name: cuda-13-1
+      mountPath: /usr/local/cuda
+      readOnly: true
     workingDir: /workspace
   volumes:
   - name: workspace
     hostPath:
       path: /home/kadajett/dev/rust-pcn
+      type: Directory
+  - name: cuda-13-0
+    hostPath:
+      path: /usr/local/cuda-13.0
+      type: Directory
+  - name: cuda-13-1
+    hostPath:
+      path: /usr/local/cuda-13.1
       type: Directory

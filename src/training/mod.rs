@@ -718,8 +718,17 @@ impl SurpriseState {
             // Surprise ratio
             let s = actual / expected;
 
+            // Per-layer effective sensitivity (adaptive or fixed)
+            let effective_sensitivity = if seal_config.adaptive_sensitivity {
+                let var = self.error_variance[l];
+                let scale = (1.0 + var.sqrt()).clamp(0.5, 3.0);
+                seal_config.sensitivity * scale
+            } else {
+                seal_config.sensitivity
+            };
+
             // Log-ratio z value
-            let z = seal_config.sensitivity * s.ln();
+            let z = effective_sensitivity * s.ln();
 
             // Sigmoid mapping
             let sigma = 1.0 / (1.0 + (-z).exp());
@@ -729,9 +738,14 @@ impl SurpriseState {
 
             self.last_surprise[l] = s;
 
-            // Update EMA
+            // Update EMA of expected error
             self.expected_error[l] =
                 (1.0 - seal_config.ema_decay) * self.expected_error[l] + seal_config.ema_decay * actual;
+
+            // Update exponential moving variance: Var = (1-d)*Var + d*(actual - expected)^2
+            let diff = actual - self.expected_error[l];
+            self.error_variance[l] =
+                (1.0 - seal_config.ema_decay) * self.error_variance[l] + seal_config.ema_decay * diff * diff;
         }
 
         self.last_modulation = modulation.clone();

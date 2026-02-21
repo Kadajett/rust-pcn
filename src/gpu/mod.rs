@@ -1,13 +1,21 @@
 //! GPU-accelerated PCN training using the burn framework.
 //!
-//! Provides GPU-based tensor operations via the wgpu backend for cross-platform
-//! GPU support (Vulkan, Metal, CUDA, DX12). Uses whole-batch parallelism on GPU
-//! with explicit Hebbian updates (no autograd needed).
+//! Provides GPU-based tensor operations via configurable backend (wgpu or CUDA).
+//! Uses whole-batch parallelism on GPU with explicit Hebbian updates (no autograd needed).
 
 pub mod convert;
 pub mod tensors;
 
-use burn::backend::wgpu::WgpuDevice;
+// Prevent enabling both backends simultaneously
+#[cfg(all(feature = "cuda", feature = "wgpu"))]
+compile_error!("Features `cuda` and `wgpu` are mutually exclusive. Use --no-default-features --features cuda for CUDA.");
+
+/// GPU backend type alias — resolves at compile time based on feature flags.
+#[cfg(feature = "cuda")]
+pub type GpuBackend = burn::backend::CudaJit;
+#[cfg(not(feature = "cuda"))]
+pub type GpuBackend = burn::backend::wgpu::Wgpu;
+
 use burn::prelude::*;
 use ndarray::Array2;
 
@@ -20,8 +28,7 @@ use crate::SealConfig;
 use convert::{ndarray1_to_tensor, ndarray2_to_tensor, tensor_to_ndarray1, tensor_to_ndarray2};
 use tensors::{
     compute_batch_energy_gpu_tensor, compute_errors_gpu, compute_layer_error_norms_gpu,
-    init_state_from_input_gpu, read_energy_scalar, relax_step_gpu, update_weights_gpu,
-    update_weights_gpu_seal,
+    init_state_from_input_gpu, relax_step_gpu, update_weights_gpu, update_weights_gpu_seal,
 };
 // Re-export for tests and external callers
 #[allow(unused_imports)]
@@ -86,9 +93,16 @@ impl<B: Backend> GpuPcn<B> {
     }
 }
 
-/// Initialize the wgpu device (auto-detect best GPU).
-pub fn init_device() -> WgpuDevice {
-    WgpuDevice::default()
+/// Initialize the GPU device for the active backend.
+#[cfg(feature = "cuda")]
+pub fn init_device() -> <GpuBackend as burn::prelude::Backend>::Device {
+    burn::backend::cuda_jit::CudaDevice { index: 0 }
+}
+
+/// Initialize the GPU device for the active backend.
+#[cfg(not(feature = "cuda"))]
+pub fn init_device() -> <GpuBackend as burn::prelude::Backend>::Device {
+    burn::backend::wgpu::WgpuDevice::default()
 }
 
 /// Train one epoch on GPU.
@@ -209,17 +223,18 @@ pub fn train_epoch_gpu<B: Backend>(
         }
     }
 
-    // Single GPU->CPU sync for all energy values at end of epoch
-    let all_batch_losses: Vec<f32> = batch_energy_tensors
+    // Single GPU->CPU sync: cat all energy tensors, one readback
+    let all_energies_tensor = Tensor::cat(batch_energy_tensors, 0);
+    let all_energies: Vec<f32> = all_energies_tensor
+        .into_data()
+        .to_vec::<f32>()
+        .expect("energy values");
+    let all_batch_losses: Vec<f32> = all_energies
         .iter()
         .zip(batch_sizes.iter())
-        .map(|(e, &bs)| read_energy_scalar(e) / bs as f32)
+        .map(|(&e, &bs)| e / bs as f32)
         .collect();
-    let total_energy: f32 = batch_energy_tensors
-        .iter()
-        .map(|e| read_energy_scalar(e))
-        .sum();
-    let avg_loss = total_energy / num_samples as f32;
+    let avg_loss = all_energies.iter().sum::<f32>() / num_samples as f32;
 
     Ok(EpochMetrics {
         avg_loss,
@@ -348,17 +363,18 @@ pub fn train_epoch_gpu_seal<B: Backend>(
         }
     }
 
-    // Single GPU->CPU sync for all energy values
-    let all_batch_losses: Vec<f32> = batch_energy_tensors
+    // Single GPU->CPU sync: cat all energy tensors, one readback
+    let all_energies_tensor = Tensor::cat(batch_energy_tensors, 0);
+    let all_energies: Vec<f32> = all_energies_tensor
+        .into_data()
+        .to_vec::<f32>()
+        .expect("energy values");
+    let all_batch_losses: Vec<f32> = all_energies
         .iter()
         .zip(batch_sizes.iter())
-        .map(|(e, &bs)| read_energy_scalar(e) / bs as f32)
+        .map(|(&e, &bs)| e / bs as f32)
         .collect();
-    let total_energy: f32 = batch_energy_tensors
-        .iter()
-        .map(|e| read_energy_scalar(e))
-        .sum();
-    let avg_loss = total_energy / num_samples as f32;
+    let avg_loss = all_energies.iter().sum::<f32>() / num_samples as f32;
 
     Ok(EpochMetrics {
         avg_loss,
@@ -367,6 +383,155 @@ pub fn train_epoch_gpu_seal<B: Backend>(
         num_samples,
         batch_losses: all_batch_losses,
     })
+}
+
+/// Run batched GPU inference (input clamped, output free) and return output activations.
+///
+/// Unlike training where both input and output are clamped, inference mode only
+/// clamps the input layer and lets the output layer settle freely during relaxation.
+#[allow(clippy::cast_precision_loss)]
+pub fn predict_batch_gpu<B: Backend>(
+    gpu_pcn: &GpuPcn<B>,
+    inputs: &Array2<f32>,
+    config: &Config,
+) -> Array2<f32> {
+    let l_max = gpu_pcn.dims.len() - 1;
+    let device = &gpu_pcn.device;
+
+    let input_tensor: Tensor<B, 2> = ndarray2_to_tensor(inputs, device);
+
+    // Bottom-up initialization
+    let mut state =
+        init_state_from_input_gpu(input_tensor.clone(), &gpu_pcn.w, &gpu_pcn.dims, device);
+
+    // Pre-compute alpha tensor once
+    let alpha_t: Tensor<B, 1> =
+        Tensor::from_data(TensorData::new(vec![config.alpha], [1]), device);
+    let alpha_2d: Tensor<B, 2> = alpha_t.reshape([1, 1]);
+
+    // Inference-mode relaxation: clamp input only, output is free
+    for _ in 0..config.relax_steps {
+        compute_errors_gpu(&mut state, &gpu_pcn.w, &gpu_pcn.b, l_max);
+        relax_step_gpu(&mut state, &gpu_pcn.w, &alpha_2d, l_max, device);
+        state.x[0] = input_tensor.clone();
+    }
+
+    // Return output layer activations
+    tensor_to_ndarray2(state.x[l_max].clone())
+}
+
+/// Compute argmax accuracy on GPU using batched inference.
+///
+/// Subsamples up to `max_samples` rows, runs `predict_batch_gpu`,
+/// then does argmax comparison on CPU (cheap).
+#[allow(clippy::cast_precision_loss)]
+pub fn compute_accuracy_gpu<B: Backend>(
+    gpu_pcn: &GpuPcn<B>,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    config: &Config,
+    max_samples: usize,
+) -> f32 {
+    let n = inputs.nrows();
+    if n == 0 {
+        return 0.0;
+    }
+
+    let step = if n > max_samples { n / max_samples } else { 1 };
+    let sampled_indices: Vec<usize> = (0..n).step_by(step).collect();
+    let n_sampled = sampled_indices.len();
+
+    let mut sampled_inputs = Array2::zeros((n_sampled, inputs.ncols()));
+    let mut sampled_targets = Array2::zeros((n_sampled, targets.ncols()));
+    for (i, &idx) in sampled_indices.iter().enumerate() {
+        sampled_inputs.row_mut(i).assign(&inputs.row(idx));
+        sampled_targets.row_mut(i).assign(&targets.row(idx));
+    }
+
+    let predictions = predict_batch_gpu(gpu_pcn, &sampled_inputs, config);
+
+    // Argmax comparison on CPU
+    let mut correct = 0u32;
+    for i in 0..n_sampled {
+        let pred_idx = predictions
+            .row(i)
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        let target_idx = sampled_targets
+            .row(i)
+            .iter()
+            .enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(idx, _)| idx)
+            .unwrap_or(0);
+        if pred_idx == target_idx {
+            correct += 1;
+        }
+    }
+
+    correct as f32 / n_sampled as f32
+}
+
+/// Compute per-layer error norms on GPU using training-mode relaxation (both input and output clamped).
+///
+/// Subsamples up to `max_samples` rows, runs clamped relaxation, then uses
+/// `compute_layer_error_norms_gpu` for a single GPU→CPU readback.
+#[allow(clippy::cast_precision_loss)]
+pub fn compute_layer_errors_eval_gpu<B: Backend>(
+    gpu_pcn: &GpuPcn<B>,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    config: &Config,
+    max_samples: usize,
+) -> Vec<f32> {
+    let n = inputs.nrows();
+    if n == 0 {
+        return vec![];
+    }
+
+    let l_max = gpu_pcn.dims.len() - 1;
+    let device = &gpu_pcn.device;
+
+    let step = if n > max_samples { n / max_samples } else { 1 };
+    let sampled_indices: Vec<usize> = (0..n).step_by(step).collect();
+    let n_sampled = sampled_indices.len();
+
+    let mut sampled_inputs = Array2::zeros((n_sampled, inputs.ncols()));
+    let mut sampled_targets = Array2::zeros((n_sampled, targets.ncols()));
+    for (i, &idx) in sampled_indices.iter().enumerate() {
+        sampled_inputs.row_mut(i).assign(&inputs.row(idx));
+        sampled_targets.row_mut(i).assign(&targets.row(idx));
+    }
+
+    let input_tensor: Tensor<B, 2> = ndarray2_to_tensor(&sampled_inputs, device);
+    let target_tensor: Tensor<B, 2> = ndarray2_to_tensor(&sampled_targets, device);
+
+    // Initialize state with bottom-up propagation
+    let mut state =
+        init_state_from_input_gpu(input_tensor.clone(), &gpu_pcn.w, &gpu_pcn.dims, device);
+
+    // Training mode: clamp both input and output
+    state.x[l_max] = target_tensor.clone();
+
+    let alpha_t: Tensor<B, 1> =
+        Tensor::from_data(TensorData::new(vec![config.alpha], [1]), device);
+    let alpha_2d: Tensor<B, 2> = alpha_t.reshape([1, 1]);
+
+    for _ in 0..config.relax_steps {
+        compute_errors_gpu(&mut state, &gpu_pcn.w, &gpu_pcn.b, l_max);
+        relax_step_gpu(&mut state, &gpu_pcn.w, &alpha_2d, l_max, device);
+        state.x[0] = input_tensor.clone();
+        state.x[l_max] = target_tensor.clone();
+    }
+
+    // Final error computation
+    compute_errors_gpu(&mut state, &gpu_pcn.w, &gpu_pcn.b, l_max);
+
+    // Reuse existing function for single GPU->CPU sync
+    compute_layer_error_norms_gpu(&state, n_sampled)
 }
 
 /// Shuffle indices in-place using Fisher-Yates algorithm.

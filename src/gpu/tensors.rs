@@ -176,23 +176,27 @@ pub fn compute_batch_energy_gpu<B: Backend>(state: &GpuBatchState<B>) -> f32 {
 /// Compute per-layer error norms on GPU and return as Vec<f32>.
 ///
 /// For each layer l: `sqrt(sum(eps[l]^2) / batch_size)`
-/// Small GPU->CPU sync (one scalar per layer).
+/// Single GPU->CPU sync: all layer norms are concatenated on GPU, then read back once.
 #[allow(clippy::cast_precision_loss)]
 pub fn compute_layer_error_norms_gpu<B: Backend>(
     state: &GpuBatchState<B>,
     batch_size: usize,
 ) -> Vec<f32> {
-    state
+    let norms: Vec<Tensor<B, 1>> = state
         .eps
         .iter()
         .map(|eps| {
-            // sum of squared elements / batch_size, then sqrt
-            let sum_sq = eps.clone().mul(eps.clone()).sum();
-            let mean_sq = sum_sq.div_scalar(batch_size as f32);
-            let norm = mean_sq.sqrt();
-            norm.into_data().to_vec::<f32>().expect("scalar")[0]
+            eps.clone()
+                .mul(eps.clone())
+                .sum()
+                .div_scalar(batch_size as f32)
+                .sqrt()
         })
-        .collect()
+        .collect();
+    Tensor::cat(norms, 0)
+        .into_data()
+        .to_vec::<f32>()
+        .expect("layer norms")
 }
 
 /// Batch-averaged Hebbian weight update on GPU with per-layer SEAL modulation.

@@ -8,7 +8,9 @@ use ndarray::{Array1, Array2, Axis};
 use pcn::checkpoint::save_checkpoint;
 use pcn::data::samples::{load_book, train_eval_split, SampleConfig};
 use pcn::data::vocab::Vocabulary;
-use pcn::{BufferPool, Config, TanhActivation, PCN};
+use pcn::gpu::{self, GpuPcn};
+use pcn::{BufferPool, Config, SleepConfig, TanhActivation, PCN};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -80,6 +82,38 @@ struct Args {
     /// Max training samples per book (0 = unlimited)
     #[arg(long, default_value_t = 0)]
     max_samples_per_book: usize,
+
+    /// Use GPU acceleration (wgpu backend)
+    #[arg(long, default_value_t = false)]
+    gpu: bool,
+
+    /// Enable sleep/dream consolidation phases between wake epochs
+    #[arg(long, default_value_t = false)]
+    sleep: bool,
+
+    /// Run sleep phase every N wake epochs
+    #[arg(long, default_value_t = 3)]
+    sleep_every: usize,
+
+    /// Number of REM dream cycles per sleep phase
+    #[arg(long, default_value_t = 2)]
+    dream_epochs: usize,
+
+    /// Noise level for generative dreaming (0.0 to 1.0)
+    #[arg(long, default_value_t = 0.1)]
+    dream_noise: f32,
+
+    /// Fraction of training data to replay during NREM phase
+    #[arg(long, default_value_t = 0.3)]
+    replay_fraction: f32,
+
+    /// Learning rate for replay (NREM) phase
+    #[arg(long, default_value_t = 0.003)]
+    replay_lr: f32,
+
+    /// Learning rate for dream (REM) anti-Hebbian unlearning
+    #[arg(long, default_value_t = 0.001)]
+    reverse_lr: f32,
 }
 
 /// Per-book data: separate train and eval sets.
@@ -156,7 +190,52 @@ fn main() {
     eprintln!("  Alpha: {}, Eta: {}", args.alpha, args.eta);
     eprintln!("  Books dir: {}", args.books_dir.display());
     eprintln!("  Metrics: {}", args.metrics_file.display());
+    if args.gpu {
+        eprintln!("  Backend: GPU (wgpu)");
+    } else {
+        eprintln!("  Backend: CPU (Rayon)");
+    }
+
+    // Sleep configuration
+    let sleep_config = if args.sleep {
+        let sc = SleepConfig {
+            dream_epochs: args.dream_epochs,
+            replay_fraction: args.replay_fraction,
+            dream_noise: args.dream_noise,
+            sleep_every: args.sleep_every,
+            replay_learning_rate: args.replay_lr,
+            reverse_learning_rate: args.reverse_lr,
+            replay_extra_relax_steps: 10,
+        };
+        eprintln!("  Sleep: enabled (every {} epochs)", sc.sleep_every);
+        eprintln!(
+            "    Replay: {:.0}% of data, lr={}, extra_relax={}",
+            sc.replay_fraction * 100.0,
+            sc.replay_learning_rate,
+            sc.replay_extra_relax_steps
+        );
+        eprintln!(
+            "    Dream: {} cycles, noise={}, reverse_lr={}",
+            sc.dream_epochs, sc.dream_noise, sc.reverse_learning_rate
+        );
+        Some(sc)
+    } else {
+        eprintln!("  Sleep: disabled");
+        None
+    };
     eprintln!();
+
+    // Initialize GPU device and transfer weights if using GPU
+    let device = if args.gpu {
+        Some(gpu::init_device())
+    } else {
+        None
+    };
+    let mut gpu_pcn: Option<GpuPcn<burn::backend::wgpu::Wgpu>> = if let Some(ref dev) = device {
+        Some(GpuPcn::from_cpu(&pcn, dev))
+    } else {
+        None
+    };
 
     for epoch in (start_epoch + 1)..=(start_epoch + args.epochs) {
         let epoch_start = Instant::now();
@@ -188,21 +267,53 @@ fn main() {
         let (all_train_inputs, all_train_targets) = combine_book_data(&books, true);
         let total_train_samples = all_train_inputs.nrows();
 
-        // Train one epoch
-        let epoch_metrics = pcn::train_epoch_parallel(
-            &mut pcn,
-            &all_train_inputs,
-            &all_train_targets,
-            args.batch_size,
-            &config,
-            &pool,
-            true, // shuffle
-        );
+        // Train one epoch (GPU, CPU+sleep, or CPU path)
+        let (epoch_metrics, sleep_result) = if let Some(ref mut gpu) = gpu_pcn {
+            let m = gpu::train_epoch_gpu(
+                gpu,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+            );
+            (m, None)
+        } else if let Some(ref sc) = sleep_config {
+            match pcn::train_epoch_with_sleep(
+                &mut pcn,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+                sc,
+                &pool,
+                epoch,
+                true, // shuffle
+            ) {
+                Ok((wake_m, sleep_m)) => (Ok(wake_m), sleep_m),
+                Err(e) => (Err(e), None),
+            }
+        } else {
+            let m = pcn::train_epoch_parallel(
+                &mut pcn,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+                &pool,
+                true, // shuffle
+            );
+            (m, None)
+        };
 
         let elapsed = epoch_start.elapsed().as_secs_f32();
 
         match epoch_metrics {
             Ok(metrics) => {
+                // Sync GPU weights back to CPU for eval and checkpointing
+                if let Some(ref gpu) = gpu_pcn {
+                    gpu.to_cpu(&mut pcn);
+                }
+
                 // Compute overall accuracy on eval sets
                 let overall_accuracy = compute_eval_accuracy(&pcn, &books, &config);
 
@@ -210,17 +321,34 @@ fn main() {
                 let layer_errors =
                     compute_layer_errors(&pcn, &all_train_inputs, &all_train_targets, &config);
 
+                // Report sleep metrics if a sleep phase ran this epoch
+                if let Some(ref sm) = sleep_result {
+                    eprintln!(
+                        "  SLEEP | replay: {:.4} ({} samples) | dream: {:.4} ({} cycles) | unlearn: {:.6}",
+                        sm.replay_energy,
+                        sm.replay_samples,
+                        sm.dream_energy,
+                        sm.dream_cycles,
+                        sm.dream_unlearning_magnitude
+                    );
+                }
+
                 eprintln!(
-                    "Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s",
+                    "Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s{}",
                     epoch,
                     metrics.avg_loss,
                     overall_accuracy * 100.0,
                     total_train_samples,
-                    elapsed
+                    elapsed,
+                    if sleep_result.is_some() {
+                        " [+sleep]"
+                    } else {
+                        ""
+                    }
                 );
 
                 // Write epoch metrics
-                let epoch_event = serde_json::json!({
+                let mut epoch_event = serde_json::json!({
                     "type": "epoch",
                     "epoch": epoch,
                     "avg_energy": metrics.avg_loss,
@@ -230,6 +358,18 @@ fn main() {
                     "num_samples": total_train_samples,
                     "num_books": books.len(),
                 });
+
+                // Include sleep metrics in the epoch event if sleep ran
+                if let Some(ref sm) = sleep_result {
+                    epoch_event["sleep"] = serde_json::json!({
+                        "replay_energy": sm.replay_energy,
+                        "replay_samples": sm.replay_samples,
+                        "dream_energy": sm.dream_energy,
+                        "dream_cycles": sm.dream_cycles,
+                        "dream_unlearning_magnitude": sm.dream_unlearning_magnitude,
+                    });
+                }
+
                 writeln!(metrics_file, "{}", epoch_event).expect("Failed to write metrics");
 
                 // Per-book evaluation
@@ -291,7 +431,7 @@ fn main() {
     );
 }
 
-/// Scan the books directory for new .txt files and load them.
+/// Scan the books directory for new .txt files and load them in parallel.
 fn scan_for_new_books(
     books_dir: &Path,
     vocab: &Vocabulary,
@@ -308,25 +448,37 @@ fn scan_for_new_books(
         Err(_) => return,
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map_or(true, |ext| ext != "txt") {
-            continue;
-        }
+    // Collect new (not yet loaded) book paths
+    let new_paths: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map_or(true, |ext| ext != "txt") {
+                return None;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if loaded_books.contains_key(&name) {
+                return None;
+            }
+            Some(path)
+        })
+        .collect();
 
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+    if new_paths.is_empty() {
+        return;
+    }
 
-        if loaded_books.contains_key(&name) {
-            continue;
-        }
+    eprintln!("  Loading {} new books in parallel...", new_paths.len());
 
-        match load_book(&path, vocab, sample_config) {
+    // Load all new books in parallel with Rayon
+    let loaded: Vec<_> = new_paths
+        .par_iter()
+        .filter_map(|path| match load_book(path, vocab, sample_config) {
             Ok((book_name, mut inputs, mut targets)) => {
-                // Optionally limit samples per book
                 if max_samples > 0 && inputs.nrows() > max_samples {
                     inputs = inputs
                         .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..max_samples))
@@ -335,44 +487,54 @@ fn scan_for_new_books(
                         .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..max_samples))
                         .to_owned();
                 }
-
                 let total_samples = inputs.nrows();
                 let (train_in, train_tgt, eval_in, eval_tgt) =
                     train_eval_split(&inputs, &targets, eval_fraction);
-
-                eprintln!(
-                    "  Loaded book: {} ({} samples, {} train, {} eval)",
+                Some((
                     book_name,
+                    train_in,
+                    train_tgt,
+                    eval_in,
+                    eval_tgt,
                     total_samples,
-                    train_in.nrows(),
-                    eval_in.nrows()
-                );
-
-                let new_book_event = serde_json::json!({
-                    "type": "new_book",
-                    "epoch": epoch,
-                    "book": book_name,
-                    "samples": total_samples,
-                    "train_samples": train_in.nrows(),
-                    "eval_samples": eval_in.nrows(),
-                });
-                writeln!(metrics_file, "{}", new_book_event)
-                    .expect("Failed to write new_book event");
-
-                let idx = books.len();
-                books.push(BookData {
-                    name: book_name.clone(),
-                    train_inputs: train_in,
-                    train_targets: train_tgt,
-                    eval_inputs: eval_in,
-                    eval_targets: eval_tgt,
-                });
-                loaded_books.insert(book_name, idx);
+                ))
             }
             Err(e) => {
                 eprintln!("  Warning: failed to load {}: {e}", path.display());
+                None
             }
-        }
+        })
+        .collect();
+
+    // Merge results sequentially (metrics file writes, hashmap updates)
+    for (book_name, train_in, train_tgt, eval_in, eval_tgt, total_samples) in loaded {
+        eprintln!(
+            "  Loaded book: {} ({} samples, {} train, {} eval)",
+            book_name,
+            total_samples,
+            train_in.nrows(),
+            eval_in.nrows()
+        );
+
+        let new_book_event = serde_json::json!({
+            "type": "new_book",
+            "epoch": epoch,
+            "book": book_name,
+            "samples": total_samples,
+            "train_samples": train_in.nrows(),
+            "eval_samples": eval_in.nrows(),
+        });
+        writeln!(metrics_file, "{}", new_book_event).expect("Failed to write new_book event");
+
+        let idx = books.len();
+        books.push(BookData {
+            name: book_name.clone(),
+            train_inputs: train_in,
+            train_targets: train_tgt,
+            eval_inputs: eval_in,
+            eval_targets: eval_tgt,
+        });
+        loaded_books.insert(book_name, idx);
     }
 }
 

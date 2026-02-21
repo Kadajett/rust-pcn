@@ -28,6 +28,7 @@
 pub mod checkpoint;
 pub mod core;
 pub mod data;
+pub mod gpu;
 pub mod pool;
 pub mod training;
 pub mod utils;
@@ -35,8 +36,8 @@ pub mod utils;
 pub use core::{Activation, IdentityActivation, PCNError, PCNResult, State, TanhActivation, PCN};
 pub use pool::{BufferPool, PoolStats};
 pub use training::{
-    train_batch, train_batch_parallel, train_epoch, train_epoch_parallel, train_sample,
-    EpochMetrics, Metrics,
+    sleep_phase, train_batch, train_batch_parallel, train_epoch, train_epoch_parallel,
+    train_epoch_with_sleep, train_sample, EpochMetrics, Metrics, SleepConfig, SleepMetrics,
 };
 
 pub use data::{

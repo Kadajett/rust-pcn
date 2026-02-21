@@ -13,6 +13,8 @@ pub struct GpuBatchState<B: Backend> {
     pub mu: Vec<Tensor<B, 2>>,
     /// eps[l]: prediction error at layer l, shape (batch, d_l)
     pub eps: Vec<Tensor<B, 2>>,
+    /// Cached tanh(x[l]) — computed once in compute_errors, reused in relax/update
+    pub tanh_x: Vec<Tensor<B, 2>>,
 }
 
 /// Initialize batch state with bottom-up propagation on GPU.
@@ -47,7 +49,12 @@ pub fn init_state_from_input_gpu<B: Backend>(
         .map(|&d| Tensor::zeros([batch_size, d], device))
         .collect();
 
-    GpuBatchState { x, mu, eps }
+    let tanh_x: Vec<Tensor<B, 2>> = dims
+        .iter()
+        .map(|&d| Tensor::zeros([batch_size, d], device))
+        .collect();
+
+    GpuBatchState { x, mu, eps, tanh_x }
 }
 
 /// Compute top-down predictions and errors on GPU.
@@ -64,6 +71,7 @@ pub fn compute_errors_gpu<B: Backend>(
 ) {
     for l in 1..=l_max {
         let f_x_l = activation::tanh(state.x[l].clone());
+        state.tanh_x[l] = f_x_l.clone();
 
         // mu[l-1] = f_x_l @ w[l]^T + b[l-1]
         // f_x_l: (batch, d_l), w[l]: (d_{l-1}, d_l), w[l]^T: (d_l, d_{l-1})
@@ -83,27 +91,24 @@ pub fn compute_errors_gpu<B: Backend>(
 pub fn relax_step_gpu<B: Backend>(
     state: &mut GpuBatchState<B>,
     w: &[Tensor<B, 2>],
-    alpha: f32,
+    alpha_tensor: &Tensor<B, 2>,
     l_max: usize,
     device: &B::Device,
 ) {
-    let alpha_tensor: Tensor<B, 1> = Tensor::from_data(TensorData::new(vec![alpha], [1]), device);
-    let alpha_scalar = alpha_tensor.reshape([1, 1]);
-
     for l in 1..=l_max {
         let neg_eps = state.eps[l].clone().neg();
 
         // feedback = eps[l-1] @ w[l]: (batch, d_{l-1}) @ (d_{l-1}, d_l) = (batch, d_l)
         let feedback = state.eps[l - 1].clone().matmul(w[l].clone());
 
-        // f_prime = 1 - tanh(x[l])^2
-        let tanh_x = activation::tanh(state.x[l].clone());
+        // f_prime = 1 - tanh(x[l])^2, using cached tanh from compute_errors_gpu
+        let tanh_x = state.tanh_x[l].clone();
         let f_prime = tanh_x.clone().mul(tanh_x).neg() + Tensor::ones(state.x[l].shape(), device);
 
         let feedback_weighted = feedback.mul(f_prime);
         let delta = neg_eps + feedback_weighted;
 
-        state.x[l] = state.x[l].clone() + delta.mul(alpha_scalar.clone());
+        state.x[l] = state.x[l].clone() + delta.mul(alpha_tensor.clone());
     }
 }
 
@@ -129,7 +134,8 @@ pub fn update_weights_gpu<B: Backend>(
     let scale_2d = scale_tensor.clone().reshape([1, 1]);
 
     for l in 1..=l_max {
-        let f_x_l = activation::tanh(state.x[l].clone());
+        // Use cached tanh(x[l]) from compute_errors_gpu
+        let f_x_l = state.tanh_x[l].clone();
 
         // delta_w = eps[l-1]^T @ f_x_l: (d_{l-1}, batch) @ (batch, d_l) = (d_{l-1}, d_l)
         let delta_w = state.eps[l - 1].clone().transpose().matmul(f_x_l);
@@ -146,11 +152,13 @@ pub fn update_weights_gpu<B: Backend>(
 ///
 /// E = 0.5 * sum(eps^2)
 pub fn compute_batch_energy_gpu<B: Backend>(state: &GpuBatchState<B>) -> f32 {
-    let mut energy = 0.0f32;
-    for eps in &state.eps {
-        let sq = eps.clone().mul(eps.clone());
-        let sum_val: f32 = sq.sum().into_data().to_vec::<f32>().expect("scalar to vec")[0];
-        energy += sum_val;
+    // Accumulate all squared errors on GPU, then sync once
+    let mut iter = state.eps.iter();
+    let first = iter.next().expect("at least one layer");
+    let mut acc = first.clone().mul(first.clone()).sum();
+    for eps in iter {
+        acc = acc + eps.clone().mul(eps.clone()).sum();
     }
-    0.5 * energy
+    let scalar = acc.into_data().to_vec::<f32>().expect("scalar")[0];
+    0.5 * scalar
 }

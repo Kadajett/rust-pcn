@@ -45,7 +45,7 @@ struct Args {
     batch_size: usize,
 
     /// Relaxation steps per sample
-    #[arg(long, default_value_t = 20)]
+    #[arg(long, default_value_t = 8)]
     relax_steps: usize,
 
     /// Relaxation learning rate (alpha)
@@ -261,6 +261,10 @@ fn main() {
     // Process books in chunks
     let mut round: usize = 0;
     for book_chunk in remaining_books.chunks(args.books_per_round) {
+        // Reset warm-start hidden states between book chunks
+        if let Some(ref mut gpu) = gpu_pcn {
+            gpu.warm_hidden = None;
+        }
         let chunk_names: Vec<String> = book_chunk
             .iter()
             .map(|p| {
@@ -362,6 +366,13 @@ fn main() {
             // Train epochs on this section
             for epoch in 1..=args.epochs {
                 let epoch_start = Instant::now();
+
+                // Only use warm-start for epoch 1 (cross-section amortization)
+                if epoch > 1 {
+                    if let Some(ref mut gpu) = gpu_pcn {
+                        gpu.warm_hidden = None;
+                    }
+                }
 
                 let (all_train_inputs, all_train_targets) = combine_book_data(&books, true);
                 let total_train_samples = all_train_inputs.nrows();

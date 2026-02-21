@@ -61,7 +61,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            relax_steps: 20,
+            relax_steps: 8,
             alpha: 0.05,
             eta: 0.01,
             clamp_output: true,

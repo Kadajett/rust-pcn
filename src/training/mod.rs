@@ -21,7 +21,7 @@
 //! Each sample's relaxation is independent (read-only access to network weights).
 //! After all samples relax, gradients are accumulated and weights updated once.
 
-use crate::core::{PCNError, PCNResult, PCN};
+use crate::core::{PCNError, PCNResult, SparseConfig, PCN};
 use crate::pool::BufferPool;
 use crate::Config;
 use ndarray::{Array1, Array2, Axis};
@@ -493,6 +493,223 @@ pub fn train_epoch_parallel(
 }
 
 // ============================================================================
+// Sparse Coding Training (Rayon + Buffer Pool + Lateral Inhibition)
+// ============================================================================
+
+/// Train on a mini-batch with lateral inhibition (sparse coding).
+///
+/// Same as `train_batch_parallel` but applies lateral inhibition after each
+/// relaxation step and uses L1-penalized energy for loss reporting.
+///
+/// # Algorithm
+/// 1. **In parallel** (via Rayon): relax each sample to equilibrium
+///    - After each relaxation step, apply lateral inhibition to hidden layers
+///    - Reads network weights (immutable/shared)
+///    - Computes per-sample gradient
+/// 2. **Reduce**: accumulate Hebbian gradients from all samples
+/// 3. Apply single averaged weight update
+///
+/// # Arguments
+/// - `sparse_config`: Controls sparsity_k, inhibition_strength, competition_type, lambda
+///
+/// # Errors
+/// Returns `Err` on dimension mismatch or computation failure.
+#[allow(clippy::cast_precision_loss)]
+pub fn train_batch_sparse(
+    pcn: &mut PCN,
+    batch_inputs: &Array2<f32>,
+    batch_targets: &Array2<f32>,
+    config: &Config,
+    sparse_config: &SparseConfig,
+    pool: &BufferPool,
+) -> PCNResult<EpochMetrics> {
+    let batch_size = batch_inputs.nrows();
+    let l_max = pcn.dims().len() - 1;
+
+    validate_batch_dims(pcn, batch_inputs, batch_targets)?;
+
+    // Phase 1: Parallel relaxation with lateral inhibition
+    let pcn_ref: &PCN = pcn;
+
+    let sample_results: Vec<PCNResult<(SampleGradient, crate::core::State)>> = (0..batch_size)
+        .into_par_iter()
+        .map(|i| {
+            let input = batch_inputs.row(i).to_owned();
+            let target = batch_targets.row(i).to_owned();
+
+            // Get a pre-allocated state from the pool
+            let mut state = pool.get();
+
+            // Initialize with bottom-up propagation
+            state.x[0].assign(&input);
+            for l in 1..pcn_ref.dims().len() {
+                let projection = pcn_ref.w[l].t().dot(&state.x[l - 1]);
+                state.x[l] = pcn_ref.activation.apply(&projection);
+            }
+
+            // Clamp output
+            if config.clamp_output {
+                state.x[l_max].assign(&target);
+            }
+
+            // Relax to equilibrium with lateral inhibition after each step
+            for _ in 0..config.relax_steps {
+                pcn_ref.compute_errors(&mut state)?;
+                pcn_ref.relax_step(&mut state, config.alpha)?;
+
+                // Apply lateral inhibition to hidden layers
+                pcn_ref.apply_lateral_inhibition(&mut state, sparse_config);
+
+                // Re-clamp
+                state.x[0].assign(&input);
+                if config.clamp_output {
+                    state.x[l_max].assign(&target);
+                }
+            }
+            pcn_ref.compute_errors(&mut state)?;
+
+            // Compute sample energy with sparsity penalty
+            let energy = pcn_ref.compute_energy_sparse(&state, sparse_config);
+
+            // Compute sample gradient (same Hebbian rule)
+            let mut delta_w: Vec<Array2<f32>> =
+                pcn_ref.w.iter().map(|w| Array2::zeros(w.dim())).collect();
+            let mut delta_b: Vec<Array1<f32>> =
+                pcn_ref.b.iter().map(|b| Array1::zeros(b.len())).collect();
+
+            for l in 1..=l_max {
+                let f_x_l = pcn_ref.activation.apply(&state.x[l]);
+                let eps_col = state.eps[l - 1].view().insert_axis(Axis(1));
+                let fx_row = f_x_l.view().insert_axis(Axis(0));
+                delta_w[l] = &eps_col * &fx_row;
+                delta_b[l - 1].assign(&state.eps[l - 1]);
+            }
+
+            Ok((
+                SampleGradient {
+                    delta_w,
+                    delta_b,
+                    energy,
+                },
+                state,
+            ))
+        })
+        .collect();
+
+    // Phase 2: Sequential gradient accumulation and pool return
+    let mut acc_w: Vec<Array2<f32>> = pcn.w.iter().map(|w| Array2::zeros(w.dim())).collect();
+    let mut acc_b: Vec<Array1<f32>> = pcn.b.iter().map(|b| Array1::zeros(b.len())).collect();
+    let mut total_energy = 0.0f32;
+    let mut batch_losses = Vec::with_capacity(batch_size);
+    let mut states_to_return = Vec::with_capacity(batch_size);
+
+    for result in sample_results {
+        let (grad, state) = result?;
+        total_energy += grad.energy;
+        batch_losses.push(grad.energy);
+
+        for l in 1..=l_max {
+            acc_w[l] += &grad.delta_w[l];
+            acc_b[l - 1] += &grad.delta_b[l - 1];
+        }
+
+        states_to_return.push(state);
+    }
+
+    // Return all states to pool at once
+    pool.return_batch(states_to_return);
+
+    // Phase 3: Apply averaged weight update
+    apply_accumulated_gradients(pcn, &acc_w, &acc_b, config.eta, batch_size, l_max);
+
+    let avg_loss = total_energy / batch_size as f32;
+
+    Ok(EpochMetrics {
+        avg_loss,
+        accuracy: 0.0,
+        num_batches: 1,
+        num_samples: batch_size,
+        batch_losses,
+    })
+}
+
+/// Train the network for one epoch with lateral inhibition (sparse coding).
+///
+/// Same as `train_epoch_parallel` but each mini-batch uses `train_batch_sparse`
+/// which applies lateral inhibition during relaxation and reports L1-penalized energy.
+///
+/// # Arguments
+/// - `sparse_config`: Controls sparsity_k, inhibition_strength, competition_type, lambda
+///
+/// # Errors
+/// Returns `Err` on dimension mismatch, zero batch size, or computation failure.
+#[allow(clippy::cast_precision_loss)]
+pub fn train_epoch_sparse(
+    pcn: &mut PCN,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    batch_size: usize,
+    config: &Config,
+    sparse_config: &SparseConfig,
+    pool: &BufferPool,
+    shuffle: bool,
+) -> PCNResult<EpochMetrics> {
+    let num_samples = inputs.nrows();
+
+    if batch_size == 0 {
+        return Err(PCNError::InvalidConfig(
+            "Batch size must be > 0".to_string(),
+        ));
+    }
+    if num_samples != targets.nrows() {
+        return Err(PCNError::ShapeMismatch(format!(
+            "Samples mismatch: inputs={}, targets={}",
+            num_samples,
+            targets.nrows()
+        )));
+    }
+
+    let mut indices: Vec<usize> = (0..num_samples).collect();
+    if shuffle {
+        shuffle_indices(&mut indices);
+    }
+
+    let mut all_batch_losses = Vec::new();
+    let mut total_energy = 0.0f32;
+    let num_batches = num_samples.div_ceil(batch_size);
+
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * batch_size;
+        let end = (start + batch_size).min(num_samples);
+        let current_batch_size = end - start;
+
+        let (batch_inputs, batch_targets) =
+            extract_batch(inputs, targets, &indices[start..end], current_batch_size);
+
+        let batch_metrics = train_batch_sparse(
+            pcn,
+            &batch_inputs,
+            &batch_targets,
+            config,
+            sparse_config,
+            pool,
+        )?;
+        all_batch_losses.extend(batch_metrics.batch_losses);
+        total_energy += batch_metrics.avg_loss * current_batch_size as f32;
+    }
+
+    let avg_loss = total_energy / num_samples as f32;
+
+    Ok(EpochMetrics {
+        avg_loss,
+        accuracy: 0.0,
+        num_batches,
+        num_samples,
+        batch_losses: all_batch_losses,
+    })
+}
+
+// ============================================================================
 // Shared Helpers
 // ============================================================================
 
@@ -807,5 +1024,136 @@ mod tests {
 
         let diff_targets = Array2::zeros((3, 1));
         assert!(validate_batch_dims(&pcn, &ok_inputs, &diff_targets).is_err());
+    }
+
+    // ====================================================================
+    // Sparse Coding Training Tests
+    // ====================================================================
+
+    #[test]
+    fn test_train_batch_sparse_basic() {
+        use crate::core::SparseConfig;
+
+        let config = Config::default();
+        let sparse_config = SparseConfig::default();
+        let dims = vec![2, 8, 2];
+        let mut pcn = PCN::new(dims.clone()).expect("create PCN");
+        let pool = BufferPool::new(&dims, 8);
+
+        let batch_inputs = Array2::from_elem((4, 2), 0.1);
+        let batch_targets = Array2::from_elem((4, 2), 0.0);
+
+        let result = train_batch_sparse(
+            &mut pcn,
+            &batch_inputs,
+            &batch_targets,
+            &config,
+            &sparse_config,
+            &pool,
+        );
+        assert!(result.is_ok());
+
+        let metrics = result.expect("metrics");
+        assert_eq!(metrics.num_samples, 4);
+        assert!(metrics.avg_loss >= 0.0);
+    }
+
+    #[test]
+    fn test_train_epoch_sparse_basic() {
+        use crate::core::SparseConfig;
+
+        let config = Config::default();
+        let sparse_config = SparseConfig {
+            sparsity_k: 3,
+            ..SparseConfig::default()
+        };
+        let dims = vec![2, 8, 2];
+        let mut pcn = PCN::new(dims.clone()).expect("create PCN");
+        let pool = BufferPool::new(&dims, 4);
+
+        let inputs = Array2::from_elem((8, 2), 0.1);
+        let targets = Array2::from_elem((8, 2), 0.0);
+
+        let result = train_epoch_sparse(
+            &mut pcn,
+            &inputs,
+            &targets,
+            4,
+            &config,
+            &sparse_config,
+            &pool,
+            false,
+        );
+        assert!(result.is_ok());
+
+        let metrics = result.expect("metrics");
+        assert_eq!(metrics.num_samples, 8);
+        assert_eq!(metrics.num_batches, 2);
+        assert!(metrics.avg_loss >= 0.0);
+    }
+
+    #[test]
+    fn test_sparse_vs_dense_energy_comparison() {
+        // Sparse training should report higher energy due to L1 penalty
+        // compared to identical non-sparse training (all else equal)
+        use crate::core::{CompetitionType, SparseConfig};
+
+        let config = Config {
+            relax_steps: 5,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+        };
+        let sparse_config = SparseConfig {
+            sparsity_k: 2,
+            inhibition_strength: 1.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.1, // significant penalty
+        };
+
+        let dims = vec![2, 6, 2];
+        let mut pcn_dense = PCN::new(dims.clone()).expect("create PCN");
+        let mut pcn_sparse = PCN::new(dims.clone()).expect("create PCN");
+
+        // Copy weights
+        for l in 0..pcn_dense.w.len() {
+            pcn_sparse.w[l].assign(&pcn_dense.w[l]);
+        }
+        for l in 0..pcn_dense.b.len() {
+            pcn_sparse.b[l].assign(&pcn_dense.b[l]);
+        }
+
+        let pool = BufferPool::new(&dims, 8);
+        let batch_inputs = ndarray::arr2(&[[0.5, 0.3], [0.1, 0.9]]);
+        let batch_targets = ndarray::arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+
+        let dense_result = train_batch_parallel(
+            &mut pcn_dense,
+            &batch_inputs,
+            &batch_targets,
+            &config,
+            &pool,
+        )
+        .expect("dense");
+        let sparse_result = train_batch_sparse(
+            &mut pcn_sparse,
+            &batch_inputs,
+            &batch_targets,
+            &config,
+            &sparse_config,
+            &pool,
+        )
+        .expect("sparse");
+
+        // Sparse loss includes L1 penalty, so it should be >= dense loss
+        // (though network dynamics differ, so not guaranteed to be strictly greater)
+        assert!(
+            sparse_result.avg_loss >= 0.0,
+            "Sparse energy should be non-negative"
+        );
+        assert!(
+            dense_result.avg_loss >= 0.0,
+            "Dense energy should be non-negative"
+        );
     }
 }

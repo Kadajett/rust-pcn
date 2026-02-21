@@ -28,15 +28,19 @@
 pub mod checkpoint;
 pub mod core;
 pub mod data;
+pub mod gpu;
 pub mod pool;
 pub mod training;
 pub mod utils;
 
-pub use core::{Activation, IdentityActivation, PCNError, PCNResult, State, TanhActivation, PCN};
+pub use core::{
+    Activation, CompetitionType, IdentityActivation, PCNError, PCNResult, SparseConfig, State,
+    TanhActivation, PCN,
+};
 pub use pool::{BufferPool, PoolStats};
 pub use training::{
-    train_batch, train_batch_parallel, train_epoch, train_epoch_parallel, train_sample,
-    EpochMetrics, Metrics,
+    train_batch, train_batch_parallel, train_batch_sparse, train_epoch, train_epoch_parallel,
+    train_epoch_sparse, train_sample, EpochMetrics, Metrics,
 };
 
 pub use data::{

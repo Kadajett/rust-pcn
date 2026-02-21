@@ -5,6 +5,7 @@
 //! - State relaxation via gradient descent
 //! - Hebbian weight updates
 //! - Local learning rules
+//! - Lateral inhibition with sparse coding
 //!
 //! ## Energy Minimization
 //!
@@ -16,6 +17,14 @@
 //! ```
 //!
 //! Each layer predicts the one below it; neurons adjust to minimize local errors.
+//!
+//! ## Lateral Inhibition (Sparse Coding)
+//!
+//! Inspired by visual cortex competitive dynamics (Olshausen & Field, 1996),
+//! lateral inhibition creates sparse representations by suppressing weakly-active
+//! neurons after each relaxation step. Only the top-k most active neurons in
+//! hidden layers are preserved; the rest are suppressed (hard: zeroed, or
+//! soft: scaled down). An L1 sparsity penalty is added to the energy function.
 
 use ndarray::{Array1, Array2, Axis};
 use ndarray_rand::RandomExt;
@@ -210,6 +219,67 @@ pub struct BatchState {
     pub steps_taken: usize,
     /// Final total prediction error energy after relaxation
     pub final_energy: f32,
+}
+
+/// Type of lateral competition in sparse coding.
+///
+/// Determines how losing neurons (those not in the top-k) are treated.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CompetitionType {
+    /// Winner-take-all: zero out all neurons below the top-k threshold.
+    /// Creates maximally sparse representations.
+    Hard,
+    /// Soft competition: scale losers down by `(1.0 - inhibition_strength)`.
+    /// Preserves some information from weaker neurons while still encouraging sparsity.
+    Soft,
+}
+
+/// Configuration for lateral inhibition and sparse coding.
+///
+/// # Neuroscience Inspiration
+///
+/// In the visual cortex, neurons compete via lateral inhibition: when one neuron
+/// fires strongly, it suppresses its neighbors. This creates a "winner-take-most"
+/// pattern where only a few neurons are active, producing sparse, efficient
+/// representations that improve generalization and energy efficiency.
+///
+/// # Parameters
+///
+/// - `sparsity_k`: Number of top neurons to keep active in each hidden layer.
+///   For example, with a 128-unit hidden layer and `sparsity_k = 25`, only the
+///   25 most active neurons retain their full activation after each relaxation step.
+///
+/// - `inhibition_strength`: Controls how aggressively to suppress losing neurons
+///   (range 0.0 to 1.0). Only relevant for `Soft` competition. At 1.0, soft
+///   competition behaves identically to hard competition.
+///
+/// - `competition_type`: Whether to use hard (zero out) or soft (scale down)
+///   suppression of non-top-k neurons.
+///
+/// - `sparsity_lambda`: Coefficient for the L1 sparsity penalty added to the
+///   energy function: `lambda * sum(|x_hidden|)`. Encourages sparse activations
+///   during relaxation. Typical values: 0.001 to 0.1.
+#[derive(Debug, Clone)]
+pub struct SparseConfig {
+    /// Number of top neurons to keep active per hidden layer
+    pub sparsity_k: usize,
+    /// Suppression strength for losing neurons (0.0 to 1.0)
+    pub inhibition_strength: f32,
+    /// Type of competition: Hard (zero out) or Soft (scale down)
+    pub competition_type: CompetitionType,
+    /// L1 sparsity penalty coefficient for the energy function
+    pub sparsity_lambda: f32,
+}
+
+impl Default for SparseConfig {
+    fn default() -> Self {
+        Self {
+            sparsity_k: 25,
+            inhibition_strength: 0.8,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.01,
+        }
+    }
 }
 
 impl PCN {
@@ -842,6 +912,178 @@ impl PCN {
 
         Ok(())
     }
+
+    // ========================================================================
+    // Lateral Inhibition (Sparse Coding)
+    // ========================================================================
+
+    /// Apply lateral inhibition to hidden layers of a single-sample state.
+    ///
+    /// After each relaxation step, this function enforces sparsity by suppressing
+    /// weakly-active neurons in hidden layers (layers 1 to L-1). The input (layer 0)
+    /// and output (layer L) are not affected.
+    ///
+    /// # Algorithm
+    ///
+    /// For each hidden layer:
+    /// 1. Compute activation magnitudes: `|x_i|`
+    /// 2. Find the k-th largest magnitude (threshold)
+    /// 3. For neurons below threshold:
+    ///    - Hard competition: set to 0
+    ///    - Soft competition: multiply by `(1.0 - inhibition_strength)`
+    ///
+    /// # Arguments
+    /// - `sparse_config`: Sparsity parameters controlling inhibition behavior
+    pub fn apply_lateral_inhibition(&self, state: &mut State, sparse_config: &SparseConfig) {
+        let l_max = self.dims.len() - 1;
+
+        // Apply to hidden layers only (not input or output)
+        for l in 1..l_max {
+            let layer_size = state.x[l].len();
+            let k = sparse_config.sparsity_k.min(layer_size);
+
+            if k >= layer_size {
+                // k >= layer size means no suppression needed
+                continue;
+            }
+
+            // Sort neuron indices by activation magnitude (descending).
+            // The top-k indices are winners; the rest are losers.
+            let mut indices: Vec<usize> = (0..layer_size).collect();
+            indices.sort_by(|&a, &b| {
+                let mag_a = state.x[l][a].abs();
+                let mag_b = state.x[l][b].abs();
+                mag_b
+                    .partial_cmp(&mag_a)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Mark losers (indices beyond top-k)
+            let loser_indices = &indices[k..];
+
+            // Apply inhibition to losers
+            match sparse_config.competition_type {
+                CompetitionType::Hard => {
+                    for &idx in loser_indices {
+                        state.x[l][idx] = 0.0;
+                    }
+                }
+                CompetitionType::Soft => {
+                    let scale = 1.0 - sparse_config.inhibition_strength;
+                    for &idx in loser_indices {
+                        state.x[l][idx] *= scale;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply lateral inhibition to hidden layers of a batch state.
+    ///
+    /// Same as `apply_lateral_inhibition` but operates on batched activations.
+    /// Each sample in the batch has independent competition (neurons compete
+    /// within the same sample, not across samples).
+    ///
+    /// # Arguments
+    /// - `sparse_config`: Sparsity parameters controlling inhibition behavior
+    pub fn apply_batch_lateral_inhibition(
+        &self,
+        state: &mut BatchState,
+        sparse_config: &SparseConfig,
+    ) {
+        let l_max = self.dims.len() - 1;
+
+        // Apply to hidden layers only (not input or output)
+        for l in 1..l_max {
+            let layer_size = state.x[l].ncols();
+            let k = sparse_config.sparsity_k.min(layer_size);
+
+            if k >= layer_size {
+                continue;
+            }
+
+            // Process each sample independently
+            for mut row in state.x[l].rows_mut() {
+                // Sort neuron indices by activation magnitude (descending)
+                let mut indices: Vec<usize> = (0..layer_size).collect();
+                indices.sort_by(|&a, &b| {
+                    let mag_a = row[a].abs();
+                    let mag_b = row[b].abs();
+                    mag_b
+                        .partial_cmp(&mag_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                // Mark losers (indices beyond top-k)
+                let loser_indices = &indices[k..];
+
+                match sparse_config.competition_type {
+                    CompetitionType::Hard => {
+                        for &idx in loser_indices {
+                            row[idx] = 0.0;
+                        }
+                    }
+                    CompetitionType::Soft => {
+                        let scale = 1.0 - sparse_config.inhibition_strength;
+                        for &idx in loser_indices {
+                            row[idx] *= scale;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Compute total energy with an L1 sparsity penalty on hidden layers.
+    ///
+    /// # Energy Function
+    ///
+    /// ```text
+    /// E = (1/2) * Σ_ℓ ||ε^ℓ||² + λ * Σ_{hidden} |x^ℓ|
+    /// ```
+    ///
+    /// The L1 penalty encourages the network to find sparse representations
+    /// by penalizing the total activation magnitude in hidden layers.
+    ///
+    /// # Arguments
+    /// - `sparse_config`: Provides `sparsity_lambda` for the L1 penalty coefficient
+    ///
+    /// # Returns
+    /// Total energy including sparsity penalty.
+    pub fn compute_energy_sparse(&self, state: &State, sparse_config: &SparseConfig) -> f32 {
+        let base_energy = self.compute_energy(state);
+
+        let l_max = self.dims.len() - 1;
+        let mut l1_penalty = 0.0f32;
+        for l in 1..l_max {
+            for v in state.x[l].iter() {
+                l1_penalty += v.abs();
+            }
+        }
+
+        base_energy + sparse_config.sparsity_lambda * l1_penalty
+    }
+
+    /// Compute total batch energy with an L1 sparsity penalty on hidden layers.
+    ///
+    /// Batch version of `compute_energy_sparse`.
+    pub fn compute_batch_energy_sparse(
+        &self,
+        state: &BatchState,
+        sparse_config: &SparseConfig,
+    ) -> f32 {
+        let base_energy = self.compute_batch_energy(state);
+
+        let l_max = self.dims.len() - 1;
+        let mut l1_penalty = 0.0f32;
+        for l in 1..l_max {
+            for v in state.x[l].iter() {
+                l1_penalty += v.abs();
+            }
+        }
+
+        base_energy + sparse_config.sparsity_lambda * l1_penalty
+    }
 }
 
 #[cfg(test)]
@@ -1076,5 +1318,230 @@ mod tests {
 
         // Weights should have changed
         assert_ne!(pcn.w[1], original_w1);
+    }
+
+    // ====================================================================
+    // Lateral Inhibition / Sparse Coding Tests
+    // ====================================================================
+
+    #[test]
+    fn test_sparse_config_default() {
+        let config = SparseConfig::default();
+        assert_eq!(config.sparsity_k, 25);
+        assert!((config.inhibition_strength - 0.8).abs() < 1e-6);
+        assert_eq!(config.competition_type, CompetitionType::Hard);
+        assert!((config.sparsity_lambda - 0.01).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hard_lateral_inhibition() {
+        // 3-layer network: input(2), hidden(6), output(2)
+        let dims = vec![2, 6, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+
+        // Set known activations in hidden layer
+        // Magnitudes: 5.0, 1.0, 3.0, 0.5, 4.0, 2.0
+        state.x[1] = ndarray::array![5.0, -1.0, 3.0, 0.5, -4.0, 2.0];
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 3, // Keep top 3
+            inhibition_strength: 1.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.01,
+        };
+
+        pcn.apply_lateral_inhibition(&mut state, &sparse_config);
+
+        // Top 3 by magnitude: 5.0 (idx 0), -4.0 (idx 4), 3.0 (idx 2)
+        // The rest should be zeroed
+        assert!((state.x[1][0] - 5.0).abs() < 1e-6, "Top neuron preserved");
+        assert!(
+            (state.x[1][2] - 3.0).abs() < 1e-6,
+            "Third-place neuron preserved"
+        );
+        assert!(
+            (state.x[1][4] - (-4.0)).abs() < 1e-6,
+            "Second-place neuron preserved"
+        );
+        assert_eq!(state.x[1][1], 0.0, "Loser neuron zeroed (hard)");
+        assert_eq!(state.x[1][3], 0.0, "Loser neuron zeroed (hard)");
+        assert_eq!(state.x[1][5], 0.0, "Loser neuron zeroed (hard)");
+    }
+
+    #[test]
+    fn test_soft_lateral_inhibition() {
+        let dims = vec![2, 6, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+
+        state.x[1] = ndarray::array![5.0, -1.0, 3.0, 0.5, -4.0, 2.0];
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 3,
+            inhibition_strength: 0.8,
+            competition_type: CompetitionType::Soft,
+            sparsity_lambda: 0.01,
+        };
+
+        pcn.apply_lateral_inhibition(&mut state, &sparse_config);
+
+        // Top 3 unchanged
+        assert!((state.x[1][0] - 5.0).abs() < 1e-6);
+        assert!((state.x[1][2] - 3.0).abs() < 1e-6);
+        assert!((state.x[1][4] - (-4.0)).abs() < 1e-6);
+
+        // Losers scaled by (1.0 - 0.8) = 0.2
+        assert!(
+            (state.x[1][1] - (-1.0 * 0.2)).abs() < 1e-6,
+            "Soft inhibition scales losers"
+        );
+        assert!(
+            (state.x[1][3] - (0.5 * 0.2)).abs() < 1e-6,
+            "Soft inhibition scales losers"
+        );
+        assert!(
+            (state.x[1][5] - (2.0 * 0.2)).abs() < 1e-6,
+            "Soft inhibition scales losers"
+        );
+    }
+
+    #[test]
+    fn test_inhibition_does_not_affect_input_or_output() {
+        let dims = vec![2, 4, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+
+        state.x[0] = ndarray::array![10.0, 20.0];
+        state.x[2] = ndarray::array![30.0, 40.0];
+        state.x[1] = ndarray::array![1.0, 2.0, 3.0, 4.0];
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 1,
+            inhibition_strength: 1.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.0,
+        };
+
+        let input_before = state.x[0].clone();
+        let output_before = state.x[2].clone();
+
+        pcn.apply_lateral_inhibition(&mut state, &sparse_config);
+
+        assert_eq!(state.x[0], input_before, "Input layer unchanged");
+        assert_eq!(state.x[2], output_before, "Output layer unchanged");
+    }
+
+    #[test]
+    fn test_sparsity_penalty_in_energy() {
+        let dims = vec![2, 4, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+
+        // Set hidden layer activations
+        state.x[1] = ndarray::array![1.0, -2.0, 3.0, -4.0];
+        // L1 of hidden = |1| + |-2| + |3| + |-4| = 10.0
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 4,
+            inhibition_strength: 0.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.1,
+        };
+
+        let base_energy = pcn.compute_energy(&state);
+        let sparse_energy = pcn.compute_energy_sparse(&state, &sparse_config);
+
+        // Sparse energy = base + 0.1 * 10.0 = base + 1.0
+        assert!(
+            (sparse_energy - base_energy - 1.0).abs() < 1e-5,
+            "Sparsity penalty: expected base + 1.0, got {sparse_energy} vs base {base_energy}"
+        );
+    }
+
+    #[test]
+    fn test_batch_lateral_inhibition_hard() {
+        let dims = vec![2, 4, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_batch_state(2);
+
+        // Sample 0: [5.0, 1.0, 3.0, 0.5]
+        // Sample 1: [0.5, 4.0, 1.0, 6.0]
+        state.x[1] = ndarray::array![[5.0, 1.0, 3.0, 0.5], [0.5, 4.0, 1.0, 6.0]];
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 2,
+            inhibition_strength: 1.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.0,
+        };
+
+        pcn.apply_batch_lateral_inhibition(&mut state, &sparse_config);
+
+        // Sample 0 top-2 by magnitude: 5.0 (idx 0), 3.0 (idx 2)
+        assert!((state.x[1][[0, 0]] - 5.0).abs() < 1e-6);
+        assert_eq!(state.x[1][[0, 1]], 0.0);
+        assert!((state.x[1][[0, 2]] - 3.0).abs() < 1e-6);
+        assert_eq!(state.x[1][[0, 3]], 0.0);
+
+        // Sample 1 top-2 by magnitude: 6.0 (idx 3), 4.0 (idx 1)
+        assert_eq!(state.x[1][[1, 0]], 0.0);
+        assert!((state.x[1][[1, 1]] - 4.0).abs() < 1e-6);
+        assert_eq!(state.x[1][[1, 2]], 0.0);
+        assert!((state.x[1][[1, 3]] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_k_larger_than_layer_is_noop() {
+        let dims = vec![2, 4, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+        state.x[1] = ndarray::array![1.0, 2.0, 3.0, 4.0];
+
+        let before = state.x[1].clone();
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 100, // Larger than layer size
+            inhibition_strength: 1.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.0,
+        };
+
+        pcn.apply_lateral_inhibition(&mut state, &sparse_config);
+        assert_eq!(state.x[1], before, "No suppression when k >= layer size");
+    }
+
+    #[test]
+    fn test_multi_hidden_layer_inhibition() {
+        // Network with 2 hidden layers
+        let dims = vec![2, 6, 4, 2];
+        let pcn = PCN::new(dims).unwrap();
+        let mut state = pcn.init_state();
+
+        state.x[1] = ndarray::array![5.0, 1.0, 3.0, 0.5, 4.0, 2.0];
+        state.x[2] = ndarray::array![10.0, 1.0, 5.0, 0.1];
+
+        let sparse_config = SparseConfig {
+            sparsity_k: 2,
+            inhibition_strength: 1.0,
+            competition_type: CompetitionType::Hard,
+            sparsity_lambda: 0.0,
+        };
+
+        pcn.apply_lateral_inhibition(&mut state, &sparse_config);
+
+        // Layer 1 (hidden): top 2 by magnitude: 5.0 (idx 0), 4.0 (idx 4)
+        assert!((state.x[1][0] - 5.0).abs() < 1e-6);
+        assert_eq!(state.x[1][1], 0.0);
+        assert_eq!(state.x[1][2], 0.0);
+        assert_eq!(state.x[1][3], 0.0);
+        assert!((state.x[1][4] - 4.0).abs() < 1e-6);
+        assert_eq!(state.x[1][5], 0.0);
+
+        // Layer 2 (also hidden): top 2 by magnitude: 10.0 (idx 0), 5.0 (idx 2)
+        assert!((state.x[2][0] - 10.0).abs() < 1e-6);
+        assert_eq!(state.x[2][1], 0.0);
+        assert!((state.x[2][2] - 5.0).abs() < 1e-6);
+        assert_eq!(state.x[2][3], 0.0);
     }
 }

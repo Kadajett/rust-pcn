@@ -8,7 +8,9 @@ use ndarray::{Array1, Array2, Axis};
 use pcn::checkpoint::save_checkpoint;
 use pcn::data::samples::{load_book, train_eval_split, SampleConfig};
 use pcn::data::vocab::Vocabulary;
-use pcn::{BufferPool, Config, TanhActivation, PCN};
+use pcn::gpu::{self, GpuPcn};
+use pcn::{BufferPool, CompetitionType, Config, SparseConfig, TanhActivation, PCN};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -80,6 +82,30 @@ struct Args {
     /// Max training samples per book (0 = unlimited)
     #[arg(long, default_value_t = 0)]
     max_samples_per_book: usize,
+
+    /// Use GPU acceleration (wgpu backend)
+    #[arg(long, default_value_t = false)]
+    gpu: bool,
+
+    /// Enable lateral inhibition (sparse coding) during training
+    #[arg(long, default_value_t = false)]
+    sparse: bool,
+
+    /// Number of top neurons to keep active per hidden layer (sparse coding)
+    #[arg(long, default_value_t = 25)]
+    sparsity_k: usize,
+
+    /// Inhibition strength for suppressing losing neurons (0.0 to 1.0)
+    #[arg(long, default_value_t = 0.8)]
+    inhibition_strength: f32,
+
+    /// Competition type: "hard" (zero out losers) or "soft" (scale down)
+    #[arg(long, default_value = "hard")]
+    competition: String,
+
+    /// L1 sparsity penalty coefficient for energy function
+    #[arg(long, default_value_t = 0.01)]
+    sparsity_lambda: f32,
 }
 
 /// Per-book data: separate train and eval sets.
@@ -156,7 +182,45 @@ fn main() {
     eprintln!("  Alpha: {}, Eta: {}", args.alpha, args.eta);
     eprintln!("  Books dir: {}", args.books_dir.display());
     eprintln!("  Metrics: {}", args.metrics_file.display());
+    if args.gpu {
+        eprintln!("  Backend: GPU (wgpu)");
+    } else {
+        eprintln!("  Backend: CPU (Rayon)");
+    }
+
+    // Build sparse config if enabled
+    let sparse_config = if args.sparse {
+        let competition_type = match args.competition.as_str() {
+            "soft" => CompetitionType::Soft,
+            _ => CompetitionType::Hard,
+        };
+        let sc = SparseConfig {
+            sparsity_k: args.sparsity_k,
+            inhibition_strength: args.inhibition_strength,
+            competition_type,
+            sparsity_lambda: args.sparsity_lambda,
+        };
+        eprintln!(
+            "  Sparse coding: ON (k={}, strength={}, type={:?}, lambda={})",
+            sc.sparsity_k, sc.inhibition_strength, sc.competition_type, sc.sparsity_lambda
+        );
+        Some(sc)
+    } else {
+        None
+    };
     eprintln!();
+
+    // Initialize GPU device and transfer weights if using GPU
+    let device = if args.gpu {
+        Some(gpu::init_device())
+    } else {
+        None
+    };
+    let mut gpu_pcn: Option<GpuPcn<burn::backend::wgpu::Wgpu>> = if let Some(ref dev) = device {
+        Some(GpuPcn::from_cpu(&pcn, dev))
+    } else {
+        None
+    };
 
     for epoch in (start_epoch + 1)..=(start_epoch + args.epochs) {
         let epoch_start = Instant::now();
@@ -188,21 +252,47 @@ fn main() {
         let (all_train_inputs, all_train_targets) = combine_book_data(&books, true);
         let total_train_samples = all_train_inputs.nrows();
 
-        // Train one epoch
-        let epoch_metrics = pcn::train_epoch_parallel(
-            &mut pcn,
-            &all_train_inputs,
-            &all_train_targets,
-            args.batch_size,
-            &config,
-            &pool,
-            true, // shuffle
-        );
+        // Train one epoch (GPU, sparse, or standard CPU path)
+        let epoch_metrics = if let Some(ref mut gpu) = gpu_pcn {
+            gpu::train_epoch_gpu(
+                gpu,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+            )
+        } else if let Some(ref sc) = sparse_config {
+            pcn::train_epoch_sparse(
+                &mut pcn,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+                sc,
+                &pool,
+                true, // shuffle
+            )
+        } else {
+            pcn::train_epoch_parallel(
+                &mut pcn,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+                &pool,
+                true, // shuffle
+            )
+        };
 
         let elapsed = epoch_start.elapsed().as_secs_f32();
 
         match epoch_metrics {
             Ok(metrics) => {
+                // Sync GPU weights back to CPU for eval and checkpointing
+                if let Some(ref gpu) = gpu_pcn {
+                    gpu.to_cpu(&mut pcn);
+                }
+
                 // Compute overall accuracy on eval sets
                 let overall_accuracy = compute_eval_accuracy(&pcn, &books, &config);
 
@@ -291,7 +381,7 @@ fn main() {
     );
 }
 
-/// Scan the books directory for new .txt files and load them.
+/// Scan the books directory for new .txt files and load them in parallel.
 fn scan_for_new_books(
     books_dir: &Path,
     vocab: &Vocabulary,
@@ -308,25 +398,37 @@ fn scan_for_new_books(
         Err(_) => return,
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map_or(true, |ext| ext != "txt") {
-            continue;
-        }
+    // Collect new (not yet loaded) book paths
+    let new_paths: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map_or(true, |ext| ext != "txt") {
+                return None;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if loaded_books.contains_key(&name) {
+                return None;
+            }
+            Some(path)
+        })
+        .collect();
 
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+    if new_paths.is_empty() {
+        return;
+    }
 
-        if loaded_books.contains_key(&name) {
-            continue;
-        }
+    eprintln!("  Loading {} new books in parallel...", new_paths.len());
 
-        match load_book(&path, vocab, sample_config) {
+    // Load all new books in parallel with Rayon
+    let loaded: Vec<_> = new_paths
+        .par_iter()
+        .filter_map(|path| match load_book(path, vocab, sample_config) {
             Ok((book_name, mut inputs, mut targets)) => {
-                // Optionally limit samples per book
                 if max_samples > 0 && inputs.nrows() > max_samples {
                     inputs = inputs
                         .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..max_samples))
@@ -335,44 +437,54 @@ fn scan_for_new_books(
                         .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..max_samples))
                         .to_owned();
                 }
-
                 let total_samples = inputs.nrows();
                 let (train_in, train_tgt, eval_in, eval_tgt) =
                     train_eval_split(&inputs, &targets, eval_fraction);
-
-                eprintln!(
-                    "  Loaded book: {} ({} samples, {} train, {} eval)",
+                Some((
                     book_name,
+                    train_in,
+                    train_tgt,
+                    eval_in,
+                    eval_tgt,
                     total_samples,
-                    train_in.nrows(),
-                    eval_in.nrows()
-                );
-
-                let new_book_event = serde_json::json!({
-                    "type": "new_book",
-                    "epoch": epoch,
-                    "book": book_name,
-                    "samples": total_samples,
-                    "train_samples": train_in.nrows(),
-                    "eval_samples": eval_in.nrows(),
-                });
-                writeln!(metrics_file, "{}", new_book_event)
-                    .expect("Failed to write new_book event");
-
-                let idx = books.len();
-                books.push(BookData {
-                    name: book_name.clone(),
-                    train_inputs: train_in,
-                    train_targets: train_tgt,
-                    eval_inputs: eval_in,
-                    eval_targets: eval_tgt,
-                });
-                loaded_books.insert(book_name, idx);
+                ))
             }
             Err(e) => {
                 eprintln!("  Warning: failed to load {}: {e}", path.display());
+                None
             }
-        }
+        })
+        .collect();
+
+    // Merge results sequentially (metrics file writes, hashmap updates)
+    for (book_name, train_in, train_tgt, eval_in, eval_tgt, total_samples) in loaded {
+        eprintln!(
+            "  Loaded book: {} ({} samples, {} train, {} eval)",
+            book_name,
+            total_samples,
+            train_in.nrows(),
+            eval_in.nrows()
+        );
+
+        let new_book_event = serde_json::json!({
+            "type": "new_book",
+            "epoch": epoch,
+            "book": book_name,
+            "samples": total_samples,
+            "train_samples": train_in.nrows(),
+            "eval_samples": eval_in.nrows(),
+        });
+        writeln!(metrics_file, "{}", new_book_event).expect("Failed to write new_book event");
+
+        let idx = books.len();
+        books.push(BookData {
+            name: book_name.clone(),
+            train_inputs: train_in,
+            train_targets: train_tgt,
+            eval_inputs: eval_in,
+            eval_targets: eval_tgt,
+        });
+        loaded_books.insert(book_name, idx);
     }
 }
 

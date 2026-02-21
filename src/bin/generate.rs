@@ -55,8 +55,7 @@ fn main() {
     let vocab = Vocabulary::default_ascii();
 
     eprintln!("Loading checkpoint: {}", args.checkpoint.display());
-    let (data, pcn) =
-        load_checkpoint(&args.checkpoint, None).expect("Failed to load checkpoint");
+    let (data, pcn) = load_checkpoint(&args.checkpoint, None).expect("Failed to load checkpoint");
     eprintln!(
         "  Loaded: epoch={}, energy={:.4}, accuracy={:.4}",
         data.epoch, data.avg_energy, data.accuracy
@@ -73,13 +72,24 @@ fn main() {
     if args.interactive {
         interactive_mode(&pcn, &vocab, &config, &args);
     } else {
-        let output = generate_text(&pcn, &vocab, &config, &args.seed, args.length, args.window_size, args.temperature);
+        let output = generate_text(
+            &pcn,
+            &vocab,
+            &config,
+            &args.seed,
+            args.length,
+            args.window_size,
+            args.temperature,
+        );
         println!("{}", output);
     }
 }
 
 fn interactive_mode(pcn: &pcn::PCN, vocab: &Vocabulary, config: &Config, args: &Args) {
-    eprintln!("\nInteractive mode. Type a prompt (at least {} chars) and press Enter.", args.window_size);
+    eprintln!(
+        "\nInteractive mode. Type a prompt (at least {} chars) and press Enter.",
+        args.window_size
+    );
     eprintln!("Type 'quit' to exit.\n");
 
     let stdin = io::stdin();
@@ -110,7 +120,15 @@ fn interactive_mode(pcn: &pcn::PCN, vocab: &Vocabulary, config: &Config, args: &
             prompt.to_string()
         };
 
-        let output = generate_text(pcn, vocab, config, &seed, args.length, args.window_size, args.temperature);
+        let output = generate_text(
+            pcn,
+            vocab,
+            config,
+            &seed,
+            args.length,
+            args.window_size,
+            args.temperature,
+        );
         println!("\n{}{}\n", seed, &output[seed.len().min(output.len())..]);
     }
 }
@@ -205,7 +223,10 @@ fn predict(pcn: &pcn::PCN, input: &Array1<f32>, config: &Config) -> Array1<f32> 
 fn sample_with_temperature(logits: &Array1<f32>, vocab: &Vocabulary, temperature: f32) -> char {
     // Apply temperature scaling and softmax
     let max_val = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let scaled: Vec<f32> = logits.iter().map(|&x| ((x - max_val) / temperature).exp()).collect();
+    let scaled: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_val) / temperature).exp())
+        .collect();
     let sum: f32 = scaled.iter().sum();
     let probs: Vec<f32> = scaled.iter().map(|x| x / sum).collect();
 

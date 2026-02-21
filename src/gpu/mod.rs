@@ -15,10 +15,13 @@ use crate::core::{PCNResult, PCN};
 use crate::training::EpochMetrics;
 use crate::Config;
 
+use crate::training::SurpriseState;
+use crate::SealConfig;
 use convert::{ndarray1_to_tensor, ndarray2_to_tensor, tensor_to_ndarray1, tensor_to_ndarray2};
 use tensors::{
-    compute_batch_energy_gpu_tensor, compute_errors_gpu, init_state_from_input_gpu,
-    read_energy_scalar, relax_step_gpu, update_weights_gpu,
+    compute_batch_energy_gpu_tensor, compute_errors_gpu, compute_layer_error_norms_gpu,
+    init_state_from_input_gpu, read_energy_scalar, relax_step_gpu, update_weights_gpu,
+    update_weights_gpu_seal,
 };
 // Re-export for tests and external callers
 #[allow(unused_imports)]
@@ -207,6 +210,145 @@ pub fn train_epoch_gpu<B: Backend>(
     }
 
     // Single GPU->CPU sync for all energy values at end of epoch
+    let all_batch_losses: Vec<f32> = batch_energy_tensors
+        .iter()
+        .zip(batch_sizes.iter())
+        .map(|(e, &bs)| read_energy_scalar(e) / bs as f32)
+        .collect();
+    let total_energy: f32 = batch_energy_tensors
+        .iter()
+        .map(|e| read_energy_scalar(e))
+        .sum();
+    let avg_loss = total_energy / num_samples as f32;
+
+    Ok(EpochMetrics {
+        avg_loss,
+        accuracy: 0.0,
+        num_batches,
+        num_samples,
+        batch_losses: all_batch_losses,
+    })
+}
+
+/// Train one epoch on GPU with SEAL surprise modulation.
+///
+/// Mirrors `train_epoch_gpu` with two changes per batch:
+/// 1. After final `compute_errors_gpu`: compute layer error norms for SEAL
+/// 2. Replace `update_weights_gpu` with `update_weights_gpu_seal` using modulation factors
+#[allow(clippy::cast_precision_loss)]
+pub fn train_epoch_gpu_seal<B: Backend>(
+    gpu_pcn: &mut GpuPcn<B>,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    batch_size: usize,
+    config: &Config,
+    surprise_state: &mut SurpriseState,
+    seal_config: &SealConfig,
+) -> PCNResult<EpochMetrics> {
+    let num_samples = inputs.nrows();
+    let l_max = gpu_pcn.dims.len() - 1;
+    let num_batches = num_samples.div_ceil(batch_size);
+    let device = &gpu_pcn.device.clone();
+
+    let mut batch_energy_tensors: Vec<Tensor<B, 1>> = Vec::with_capacity(num_batches);
+    let mut batch_sizes: Vec<usize> = Vec::with_capacity(num_batches);
+
+    // Shuffle indices and reorder on CPU
+    let mut indices: Vec<usize> = (0..num_samples).collect();
+    shuffle_indices(&mut indices);
+
+    let mut shuffled_inputs = Array2::zeros(inputs.dim());
+    let mut shuffled_targets = Array2::zeros(targets.dim());
+    for (i, &idx) in indices.iter().enumerate() {
+        shuffled_inputs.row_mut(i).assign(&inputs.row(idx));
+        shuffled_targets.row_mut(i).assign(&targets.row(idx));
+    }
+
+    // Upload full dataset to GPU once
+    let all_inputs_tensor: Tensor<B, 2> = ndarray2_to_tensor(&shuffled_inputs, device);
+    let all_targets_tensor: Tensor<B, 2> = ndarray2_to_tensor(&shuffled_targets, device);
+
+    // Pre-compute alpha tensor
+    let alpha_t: Tensor<B, 1> =
+        Tensor::from_data(TensorData::new(vec![config.alpha], [1]), device);
+    let alpha_2d: Tensor<B, 2> = alpha_t.reshape([1, 1]);
+
+    // Take warm hidden state
+    let warm = gpu_pcn.warm_hidden.take();
+
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * batch_size;
+        let end = (start + batch_size).min(num_samples);
+        let current_batch_size = end - start;
+
+        let input_tensor = all_inputs_tensor.clone().slice([start..end]);
+        let target_tensor = all_targets_tensor.clone().slice([start..end]);
+
+        // Bottom-up initialization
+        let mut state =
+            init_state_from_input_gpu(input_tensor.clone(), &gpu_pcn.w, &gpu_pcn.dims, device);
+
+        // Temporal amortization: warm-start first batch
+        if batch_idx == 0 {
+            if let Some(ref warm_h) = warm {
+                for (i, h) in warm_h.iter().enumerate() {
+                    let l = i + 1;
+                    if l < l_max {
+                        state.x[l] = h.clone().unsqueeze::<2>().repeat_dim(0, current_batch_size);
+                    }
+                }
+            }
+        }
+
+        // Clamp output to targets
+        if config.clamp_output {
+            state.x[l_max] = target_tensor.clone();
+        }
+
+        // Relaxation loop
+        for _ in 0..config.relax_steps {
+            compute_errors_gpu(&mut state, &gpu_pcn.w, &gpu_pcn.b, l_max);
+            relax_step_gpu(&mut state, &gpu_pcn.w, &alpha_2d, l_max, device);
+            state.x[0] = input_tensor.clone();
+            if config.clamp_output {
+                state.x[l_max] = target_tensor.clone();
+            }
+        }
+
+        // Final error computation
+        compute_errors_gpu(&mut state, &gpu_pcn.w, &gpu_pcn.b, l_max);
+
+        // SEAL: compute per-layer error norms
+        let layer_error_norms = compute_layer_error_norms_gpu(&state, current_batch_size);
+        let modulation = surprise_state.update_and_modulate(&layer_error_norms, seal_config);
+
+        // Compute batch energy on GPU
+        batch_energy_tensors.push(compute_batch_energy_gpu_tensor(&state));
+        batch_sizes.push(current_batch_size);
+
+        // SEAL: modulated weight update
+        update_weights_gpu_seal(
+            &state,
+            &mut gpu_pcn.w,
+            &mut gpu_pcn.b,
+            config.eta,
+            current_batch_size,
+            l_max,
+            &modulation,
+            device,
+        );
+
+        // Save mean hidden states from last batch for temporal amortization
+        if batch_idx == num_batches - 1 {
+            gpu_pcn.warm_hidden = Some(
+                (1..l_max)
+                    .map(|l| state.x[l].clone().mean_dim(0).squeeze(0))
+                    .collect(),
+            );
+        }
+    }
+
+    // Single GPU->CPU sync for all energy values
     let all_batch_losses: Vec<f32> = batch_energy_tensors
         .iter()
         .zip(batch_sizes.iter())

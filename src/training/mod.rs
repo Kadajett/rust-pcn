@@ -23,9 +23,10 @@
 
 use crate::core::{PCNError, PCNResult, PCN};
 use crate::pool::BufferPool;
-use crate::Config;
+use crate::{Config, SealConfig};
 use ndarray::{Array1, Array2, Axis};
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 /// Metrics computed during training on a single sample.
 #[derive(Debug, Clone)]
@@ -604,6 +605,367 @@ fn shuffle_indices(indices: &mut [usize]) {
 }
 
 // ============================================================================
+// SEAL: Surprise-gated Exponential-Average Learning
+// ============================================================================
+
+/// Per-layer surprise state for SEAL modulation.
+///
+/// Tracks the exponential moving average of layer error magnitudes and uses the
+/// log-ratio surprise signal to modulate Hebbian learning rates per-layer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SurpriseState {
+    /// EMA of per-layer error magnitudes (L2 norm).
+    pub expected_error: Vec<f32>,
+    /// Whether the EMA has been initialized with a real batch.
+    pub initialized: bool,
+    /// Most recent surprise values per layer (diagnostic).
+    pub last_surprise: Vec<f32>,
+    /// Most recent modulation factors per layer (diagnostic).
+    pub last_modulation: Vec<f32>,
+    /// Running variance of errors per layer (reserved for future adaptive thresholding).
+    pub error_variance: Vec<f32>,
+    /// Flag set by `document_boundary_reset` to blend EMA on next update.
+    pub pending_boundary_reset: bool,
+}
+
+impl SurpriseState {
+    /// Create a new `SurpriseState` for a network with `num_layers` total layers.
+    ///
+    /// The error vectors are sized to `num_layers` (one entry per layer, including
+    /// input and output). Modulation is applied to weight matrices, which operate
+    /// between layers, so modulation[l-1] scales W[l].
+    pub fn new(num_layers: usize) -> Self {
+        Self {
+            expected_error: vec![0.0; num_layers],
+            initialized: false,
+            last_surprise: vec![0.0; num_layers],
+            last_modulation: vec![1.0; num_layers],
+            error_variance: vec![0.0; num_layers],
+            pending_boundary_reset: false,
+        }
+    }
+
+    /// Signal a document boundary. The next call to `update_and_modulate` will
+    /// blend the old EMA with the new actual errors and return neutral modulation.
+    pub fn document_boundary_reset(&mut self) {
+        self.pending_boundary_reset = true;
+    }
+
+    /// Reconstruct a `SurpriseState` from checkpoint data.
+    pub fn from_checkpoint(
+        expected_error: Vec<f32>,
+        error_variance: Vec<f32>,
+        initialized: bool,
+    ) -> Self {
+        let num_layers = expected_error.len();
+        Self {
+            expected_error,
+            initialized,
+            last_surprise: vec![0.0; num_layers],
+            last_modulation: vec![1.0; num_layers],
+            error_variance,
+            pending_boundary_reset: false,
+        }
+    }
+
+    /// Compute per-layer modulation factors from current error magnitudes.
+    ///
+    /// Uses the corrected log-ratio formulation:
+    /// ```text
+    /// S[l] = actual / (expected + epsilon)
+    /// z[l] = sensitivity * ln(S[l])
+    /// sigma = 1 / (1 + exp(-z))
+    /// m[l] = min_mod + (max_mod - min_mod) * sigma
+    /// EMA:  expected[l] = (1 - decay) * expected + decay * actual
+    /// ```
+    ///
+    /// Returns a Vec of modulation factors, one per layer.
+    pub fn update_and_modulate(
+        &mut self,
+        actual_errors: &[f32],
+        seal_config: &SealConfig,
+    ) -> Vec<f32> {
+        let num_layers = self.expected_error.len();
+        let mut modulation = vec![1.0f32; num_layers];
+
+        // First batch: initialize EMA directly, return neutral modulation
+        if !self.initialized {
+            self.expected_error.copy_from_slice(actual_errors);
+            self.initialized = true;
+            self.last_surprise = vec![1.0; num_layers];
+            self.last_modulation = modulation.clone();
+            return modulation;
+        }
+
+        // Pending boundary reset: blend old EMA with new, return neutral modulation
+        if self.pending_boundary_reset {
+            let blend = seal_config.boundary_reset_blend;
+            for l in 0..num_layers {
+                self.expected_error[l] =
+                    blend * self.expected_error[l] + (1.0 - blend) * actual_errors[l];
+            }
+            self.pending_boundary_reset = false;
+            self.last_surprise = vec![1.0; num_layers];
+            self.last_modulation = modulation.clone();
+            return modulation;
+        }
+
+        // Normal operation: log-ratio surprise
+        for l in 0..num_layers {
+            let actual = actual_errors[l];
+            let expected = self.expected_error[l] + seal_config.epsilon;
+
+            // Surprise ratio
+            let s = actual / expected;
+
+            // Log-ratio z value
+            let z = seal_config.sensitivity * s.ln();
+
+            // Sigmoid mapping
+            let sigma = 1.0 / (1.0 + (-z).exp());
+
+            // Modulation factor
+            modulation[l] = seal_config.min_mod + (seal_config.max_mod - seal_config.min_mod) * sigma;
+
+            self.last_surprise[l] = s;
+
+            // Update EMA
+            self.expected_error[l] =
+                (1.0 - seal_config.ema_decay) * self.expected_error[l] + seal_config.ema_decay * actual;
+        }
+
+        self.last_modulation = modulation.clone();
+        modulation
+    }
+}
+
+/// Apply accumulated gradients with per-layer SEAL modulation.
+///
+/// `W[l] += (eta * modulation[l-1] / batch_size) * accumulated_w[l]`
+/// `b[l-1] += (eta * modulation[l-1] / batch_size) * accumulated_b[l-1]`
+#[allow(clippy::cast_precision_loss)]
+fn apply_accumulated_gradients_seal(
+    pcn: &mut PCN,
+    acc_w: &[Array2<f32>],
+    acc_b: &[Array1<f32>],
+    eta: f32,
+    batch_size: usize,
+    l_max: usize,
+    modulation: &[f32],
+) {
+    for l in 1..=l_max {
+        let scale = eta * modulation[l - 1] / batch_size as f32;
+        pcn.w[l] += &(scale * &acc_w[l]);
+        pcn.b[l - 1] = &pcn.b[l - 1] + scale * &acc_b[l - 1];
+    }
+}
+
+/// Train on a mini-batch with SEAL modulation (Rayon parallel relaxation).
+///
+/// Same as `train_batch_parallel` but additionally:
+/// 1. Computes per-layer error norms from relaxed states
+/// 2. Averages them across the batch
+/// 3. Feeds them to `SurpriseState::update_and_modulate`
+/// 4. Applies modulated weight updates via `apply_accumulated_gradients_seal`
+#[allow(clippy::cast_precision_loss)]
+pub fn train_batch_seal(
+    pcn: &mut PCN,
+    batch_inputs: &Array2<f32>,
+    batch_targets: &Array2<f32>,
+    config: &Config,
+    pool: &BufferPool,
+    surprise_state: &mut SurpriseState,
+    seal_config: &SealConfig,
+) -> PCNResult<EpochMetrics> {
+    let batch_size = batch_inputs.nrows();
+    let l_max = pcn.dims().len() - 1;
+    let num_layers = pcn.dims().len();
+
+    validate_batch_dims(pcn, batch_inputs, batch_targets)?;
+
+    // Phase 1: Parallel relaxation (identical to train_batch_parallel)
+    let pcn_ref: &PCN = pcn;
+
+    let sample_results: Vec<PCNResult<(SampleGradient, Vec<f32>, crate::core::State)>> =
+        (0..batch_size)
+            .into_par_iter()
+            .map(|i| {
+                let input = batch_inputs.row(i).to_owned();
+                let target = batch_targets.row(i).to_owned();
+
+                let mut state = pool.get();
+
+                state.x[0].assign(&input);
+                for l in 1..pcn_ref.dims().len() {
+                    let projection = pcn_ref.w[l].t().dot(&state.x[l - 1]);
+                    state.x[l] = pcn_ref.activation.apply(&projection);
+                }
+
+                if config.clamp_output {
+                    state.x[l_max].assign(&target);
+                }
+
+                for _ in 0..config.relax_steps {
+                    pcn_ref.compute_errors(&mut state)?;
+                    pcn_ref.relax_step(&mut state, config.alpha)?;
+                    state.x[0].assign(&input);
+                    if config.clamp_output {
+                        state.x[l_max].assign(&target);
+                    }
+                }
+                pcn_ref.compute_errors(&mut state)?;
+
+                let energy = pcn_ref.compute_energy(&state);
+
+                // Compute per-layer error norms for SEAL
+                let layer_errors: Vec<f32> = state.eps.iter().map(l2_norm).collect();
+
+                let mut delta_w: Vec<Array2<f32>> =
+                    pcn_ref.w.iter().map(|w| Array2::zeros(w.dim())).collect();
+                let mut delta_b: Vec<Array1<f32>> =
+                    pcn_ref.b.iter().map(|b| Array1::zeros(b.len())).collect();
+
+                for l in 1..=l_max {
+                    let f_x_l = pcn_ref.activation.apply(&state.x[l]);
+                    let eps_col = state.eps[l - 1].view().insert_axis(Axis(1));
+                    let fx_row = f_x_l.view().insert_axis(Axis(0));
+                    delta_w[l] = &eps_col * &fx_row;
+                    delta_b[l - 1].assign(&state.eps[l - 1]);
+                }
+
+                Ok((
+                    SampleGradient {
+                        delta_w,
+                        delta_b,
+                        energy,
+                    },
+                    layer_errors,
+                    state,
+                ))
+            })
+            .collect();
+
+    // Phase 2: Accumulate gradients and average layer errors
+    let mut acc_w: Vec<Array2<f32>> = pcn.w.iter().map(|w| Array2::zeros(w.dim())).collect();
+    let mut acc_b: Vec<Array1<f32>> = pcn.b.iter().map(|b| Array1::zeros(b.len())).collect();
+    let mut total_energy = 0.0f32;
+    let mut batch_losses = Vec::with_capacity(batch_size);
+    let mut states_to_return = Vec::with_capacity(batch_size);
+    let mut avg_layer_errors = vec![0.0f32; num_layers];
+
+    for result in sample_results {
+        let (grad, layer_errors, state) = result?;
+        total_energy += grad.energy;
+        batch_losses.push(grad.energy);
+
+        for l in 1..=l_max {
+            acc_w[l] += &grad.delta_w[l];
+            acc_b[l - 1] += &grad.delta_b[l - 1];
+        }
+
+        for (l, err) in layer_errors.iter().enumerate() {
+            avg_layer_errors[l] += err;
+        }
+
+        states_to_return.push(state);
+    }
+
+    pool.return_batch(states_to_return);
+
+    // Average layer errors across batch
+    for err in &mut avg_layer_errors {
+        *err /= batch_size as f32;
+    }
+
+    // Phase 3: SEAL modulation
+    let modulation = surprise_state.update_and_modulate(&avg_layer_errors, seal_config);
+
+    // Phase 4: Apply modulated weight update
+    apply_accumulated_gradients_seal(pcn, &acc_w, &acc_b, config.eta, batch_size, l_max, &modulation);
+
+    let avg_loss = total_energy / batch_size as f32;
+
+    Ok(EpochMetrics {
+        avg_loss,
+        accuracy: 0.0,
+        num_batches: 1,
+        num_samples: batch_size,
+        batch_losses,
+    })
+}
+
+/// Train the network for one epoch with SEAL modulation using Rayon parallelism.
+///
+/// Same structure as `train_epoch_parallel` but calls `train_batch_seal`.
+#[allow(clippy::cast_precision_loss)]
+pub fn train_epoch_parallel_seal(
+    pcn: &mut PCN,
+    inputs: &Array2<f32>,
+    targets: &Array2<f32>,
+    batch_size: usize,
+    config: &Config,
+    pool: &BufferPool,
+    shuffle: bool,
+    surprise_state: &mut SurpriseState,
+    seal_config: &SealConfig,
+) -> PCNResult<EpochMetrics> {
+    let num_samples = inputs.nrows();
+
+    if batch_size == 0 {
+        return Err(PCNError::InvalidConfig(
+            "Batch size must be > 0".to_string(),
+        ));
+    }
+    if num_samples != targets.nrows() {
+        return Err(PCNError::ShapeMismatch(format!(
+            "Samples mismatch: inputs={}, targets={}",
+            num_samples,
+            targets.nrows()
+        )));
+    }
+
+    let mut indices: Vec<usize> = (0..num_samples).collect();
+    if shuffle {
+        shuffle_indices(&mut indices);
+    }
+
+    let mut all_batch_losses = Vec::new();
+    let mut total_energy = 0.0f32;
+    let num_batches = num_samples.div_ceil(batch_size);
+
+    for batch_idx in 0..num_batches {
+        let start = batch_idx * batch_size;
+        let end = (start + batch_size).min(num_samples);
+        let current_batch_size = end - start;
+
+        let (batch_inputs, batch_targets) =
+            extract_batch(inputs, targets, &indices[start..end], current_batch_size);
+
+        let batch_metrics = train_batch_seal(
+            pcn,
+            &batch_inputs,
+            &batch_targets,
+            config,
+            pool,
+            surprise_state,
+            seal_config,
+        )?;
+        all_batch_losses.extend(batch_metrics.batch_losses);
+        total_energy += batch_metrics.avg_loss * current_batch_size as f32;
+    }
+
+    let avg_loss = total_energy / num_samples as f32;
+
+    Ok(EpochMetrics {
+        avg_loss,
+        accuracy: 0.0,
+        num_batches,
+        num_samples,
+        batch_losses: all_batch_losses,
+    })
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
@@ -807,5 +1169,308 @@ mod tests {
 
         let diff_targets = Array2::zeros((3, 1));
         assert!(validate_batch_dims(&pcn, &ok_inputs, &diff_targets).is_err());
+    }
+
+    // ====================================================================
+    // SEAL Tests
+    // ====================================================================
+
+    fn default_seal_config() -> crate::SealConfig {
+        crate::SealConfig::default()
+    }
+
+    #[test]
+    fn test_surprise_state_initialization() {
+        let state = SurpriseState::new(3);
+        assert_eq!(state.expected_error.len(), 3);
+        assert!(!state.initialized);
+        assert_eq!(state.last_modulation, vec![1.0, 1.0, 1.0]);
+        assert!(!state.pending_boundary_reset);
+    }
+
+    #[test]
+    fn test_surprise_first_update_initializes_ema() {
+        let mut state = SurpriseState::new(3);
+        let config = default_seal_config();
+        let errors = vec![0.5, 1.0, 0.3];
+
+        let modulation = state.update_and_modulate(&errors, &config);
+
+        assert!(state.initialized);
+        assert_eq!(state.expected_error, errors);
+        // First batch always returns neutral modulation
+        assert_eq!(modulation, vec![1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn test_log_surprise_boosts_on_high_error() {
+        let mut state = SurpriseState::new(3);
+        let config = default_seal_config();
+
+        // Initialize EMA with low errors
+        let _ = state.update_and_modulate(&[1.0, 1.0, 1.0], &config);
+
+        // Now present much higher errors (S = 3/1 = 3)
+        let modulation = state.update_and_modulate(&[3.0, 3.0, 3.0], &config);
+
+        for &m in &modulation {
+            assert!(
+                m > 1.0,
+                "Modulation should boost on high surprise: got {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_log_surprise_dampens_on_low_error() {
+        let mut state = SurpriseState::new(3);
+        let config = default_seal_config();
+
+        // Initialize EMA with high errors
+        let _ = state.update_and_modulate(&[2.0, 2.0, 2.0], &config);
+
+        // Now present much lower errors (S = 0.5/2 = 0.25)
+        let modulation = state.update_and_modulate(&[0.5, 0.5, 0.5], &config);
+
+        for &m in &modulation {
+            assert!(
+                m < 1.0,
+                "Modulation should dampen on low surprise: got {m}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_log_surprise_symmetry() {
+        let mut state_high = SurpriseState::new(1);
+        let mut state_low = SurpriseState::new(1);
+        let config = default_seal_config();
+
+        // Both start with expected error = 1.0
+        let _ = state_high.update_and_modulate(&[1.0], &config);
+        let _ = state_low.update_and_modulate(&[1.0], &config);
+
+        // S=2 (actual=2, expected=1) -> ln(2) = 0.693
+        let mod_high = state_high.update_and_modulate(&[2.0], &config);
+        // S=0.5 (actual=0.5, expected=1) -> ln(0.5) = -0.693
+        let mod_low = state_low.update_and_modulate(&[0.5], &config);
+
+        // midpoint = (min_mod + max_mod) / 2 = (0.3 + 1.7) / 2 = 1.0
+        let midpoint = (config.min_mod + config.max_mod) / 2.0;
+        let dist_high = (mod_high[0] - midpoint).abs();
+        let dist_low = (mod_low[0] - midpoint).abs();
+
+        // Should be symmetric distances from midpoint
+        assert!(
+            (dist_high - dist_low).abs() < 0.01,
+            "Distances should be symmetric: high={dist_high}, low={dist_low}"
+        );
+    }
+
+    #[test]
+    fn test_modulation_stays_within_bounds() {
+        let mut state = SurpriseState::new(3);
+        let config = default_seal_config();
+
+        // Initialize
+        let _ = state.update_and_modulate(&[0.001, 0.001, 0.001], &config);
+
+        // Extremely high surprise
+        let mod_high = state.update_and_modulate(&[100.0, 100.0, 100.0], &config);
+        for &m in &mod_high {
+            assert!(m >= config.min_mod, "Below min: {m}");
+            assert!(m <= config.max_mod, "Above max: {m}");
+        }
+
+        // Extremely low surprise
+        let mod_low = state.update_and_modulate(&[0.0001, 0.0001, 0.0001], &config);
+        for &m in &mod_low {
+            assert!(m >= config.min_mod, "Below min: {m}");
+            assert!(m <= config.max_mod, "Above max: {m}");
+        }
+    }
+
+    #[test]
+    fn test_ema_tracking() {
+        let mut state = SurpriseState::new(1);
+        let config = crate::SealConfig {
+            ema_decay: 0.5,
+            ..default_seal_config()
+        };
+
+        // Initialize EMA to 1.0
+        let _ = state.update_and_modulate(&[1.0], &config);
+        assert!((state.expected_error[0] - 1.0).abs() < 1e-6);
+
+        // Update with 3.0: EMA = 0.5 * 1.0 + 0.5 * 3.0 = 2.0
+        let _ = state.update_and_modulate(&[3.0], &config);
+        assert!(
+            (state.expected_error[0] - 2.0).abs() < 1e-6,
+            "EMA should be 2.0, got {}",
+            state.expected_error[0]
+        );
+
+        // Update with 2.0: EMA = 0.5 * 2.0 + 0.5 * 2.0 = 2.0
+        let _ = state.update_and_modulate(&[2.0], &config);
+        assert!(
+            (state.expected_error[0] - 2.0).abs() < 1e-6,
+            "EMA should still be 2.0, got {}",
+            state.expected_error[0]
+        );
+    }
+
+    #[test]
+    fn test_document_boundary_reset() {
+        let mut state = SurpriseState::new(1);
+        let config = crate::SealConfig {
+            boundary_reset_blend: 0.5,
+            ..default_seal_config()
+        };
+
+        // Initialize EMA to 1.0
+        let _ = state.update_and_modulate(&[1.0], &config);
+
+        // Trigger boundary reset
+        state.document_boundary_reset();
+        assert!(state.pending_boundary_reset);
+
+        // Next update blends old EMA with new actual, returns neutral modulation
+        let modulation = state.update_and_modulate(&[3.0], &config);
+        assert_eq!(modulation, vec![1.0], "Boundary reset should return neutral modulation");
+        assert!(!state.pending_boundary_reset);
+
+        // Expected error should be blended: 0.5 * 1.0 + 0.5 * 3.0 = 2.0
+        assert!(
+            (state.expected_error[0] - 2.0).abs() < 1e-6,
+            "EMA should be blended: got {}",
+            state.expected_error[0]
+        );
+    }
+
+    #[test]
+    fn test_train_batch_seal_basic() {
+        let config = Config::default();
+        let seal_config = default_seal_config();
+        let dims = vec![2, 3, 2];
+        let mut pcn = PCN::new(dims.clone()).expect("create PCN");
+        let pool = BufferPool::new(&dims, 8);
+        let mut surprise_state = SurpriseState::new(dims.len());
+
+        let batch_inputs = Array2::from_elem((4, 2), 0.1);
+        let batch_targets = Array2::from_elem((4, 2), 0.0);
+
+        let result = train_batch_seal(
+            &mut pcn,
+            &batch_inputs,
+            &batch_targets,
+            &config,
+            &pool,
+            &mut surprise_state,
+            &seal_config,
+        );
+        assert!(result.is_ok());
+        let metrics = result.expect("metrics");
+        assert_eq!(metrics.num_samples, 4);
+        assert!(metrics.avg_loss >= 0.0);
+        assert!(surprise_state.initialized);
+    }
+
+    #[test]
+    fn test_seal_energy_decreases() {
+        let config = Config {
+            relax_steps: 10,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+        };
+        let seal_config = default_seal_config();
+        let dims = vec![2, 3, 2];
+        let mut pcn = PCN::new(dims.clone()).expect("create PCN");
+        let pool = BufferPool::new(&dims, 8);
+        let mut surprise_state = SurpriseState::new(dims.len());
+
+        // XOR-like data
+        let inputs = ndarray::arr2(&[[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        let targets = ndarray::arr2(&[[1.0, 0.0], [0.0, 1.0], [0.0, 1.0], [1.0, 0.0]]);
+
+        let first = train_epoch_parallel_seal(
+            &mut pcn, &inputs, &targets, 4, &config, &pool, false,
+            &mut surprise_state, &seal_config,
+        )
+        .expect("epoch 1");
+
+        for _ in 0..9 {
+            let _ = train_epoch_parallel_seal(
+                &mut pcn, &inputs, &targets, 4, &config, &pool, false,
+                &mut surprise_state, &seal_config,
+            );
+        }
+
+        let last = train_epoch_parallel_seal(
+            &mut pcn, &inputs, &targets, 4, &config, &pool, false,
+            &mut surprise_state, &seal_config,
+        )
+        .expect("epoch 11");
+
+        assert!(
+            last.avg_loss < first.avg_loss,
+            "Energy should decrease: first={}, last={}",
+            first.avg_loss,
+            last.avg_loss
+        );
+    }
+
+    #[test]
+    fn test_seal_with_modulation_1_matches_standard() {
+        // When min_mod = max_mod = 1.0, SEAL should behave identically to standard
+        let config = Config {
+            relax_steps: 8,
+            alpha: 0.05,
+            eta: 0.01,
+            clamp_output: true,
+        };
+        let seal_config = crate::SealConfig {
+            min_mod: 1.0,
+            max_mod: 1.0,
+            ..default_seal_config()
+        };
+
+        let dims = vec![2, 3, 1];
+        let mut pcn_seal = PCN::new(dims.clone()).expect("create PCN");
+        let mut pcn_std = PCN::new(dims.clone()).expect("create PCN");
+
+        // Copy weights for fair comparison
+        for l in 0..pcn_seal.w.len() {
+            pcn_std.w[l].assign(&pcn_seal.w[l]);
+        }
+        for l in 0..pcn_seal.b.len() {
+            pcn_std.b[l].assign(&pcn_seal.b[l]);
+        }
+
+        let pool = BufferPool::new(&dims, 8);
+        let mut surprise_state = SurpriseState::new(dims.len());
+
+        let inputs = ndarray::arr2(&[[0.0, 0.0], [0.0, 1.0], [1.0, 0.0], [1.0, 1.0]]);
+        let targets = ndarray::arr2(&[[0.0], [1.0], [1.0], [0.0]]);
+
+        let seal_result = train_batch_seal(
+            &mut pcn_seal, &inputs, &targets, &config, &pool,
+            &mut surprise_state, &seal_config,
+        )
+        .expect("seal");
+
+        let std_result = train_batch_parallel(
+            &mut pcn_std, &inputs, &targets, &config, &pool,
+        )
+        .expect("standard");
+
+        // Energy should match closely (first batch initializes EMA, returns mod=1.0)
+        let diff = (seal_result.avg_loss - std_result.avg_loss).abs();
+        assert!(
+            diff < 0.01,
+            "With modulation=1.0, SEAL should match standard: seal={}, std={}, diff={diff}",
+            seal_result.avg_loss,
+            std_result.avg_loss
+        );
     }
 }

@@ -10,7 +10,8 @@ use pcn::checkpoint::save_checkpoint;
 use pcn::data::samples::{count_book_samples, load_book, train_eval_split, SampleConfig};
 use pcn::data::vocab::Vocabulary;
 use pcn::gpu::{self, GpuPcn};
-use pcn::{BufferPool, Config, TanhActivation, PCN};
+use pcn::training::SurpriseState;
+use pcn::{BufferPool, Config, SealConfig, TanhActivation, PCN};
 use rayon::prelude::*;
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -103,6 +104,34 @@ struct Args {
     /// Number of books to load per training round (default: 1 for incremental training)
     #[arg(long, default_value_t = 1)]
     books_per_round: usize,
+
+    /// Enable SEAL (Surprise-gated Exponential-Average Learning) modulation
+    #[arg(long, default_value_t = false)]
+    seal: bool,
+
+    /// SEAL EMA decay rate
+    #[arg(long, default_value_t = 0.1)]
+    seal_ema_decay: f32,
+
+    /// SEAL sigmoid sensitivity
+    #[arg(long, default_value_t = 5.0)]
+    seal_sensitivity: f32,
+
+    /// SEAL minimum modulation factor
+    #[arg(long, default_value_t = 0.3)]
+    seal_min_mod: f32,
+
+    /// SEAL maximum modulation factor
+    #[arg(long, default_value_t = 1.7)]
+    seal_max_mod: f32,
+
+    /// SEAL: reset EMA at document boundaries
+    #[arg(long, default_value_t = true)]
+    seal_boundary_reset: bool,
+
+    /// SEAL: blend factor for boundary resets (0=full reset, 1=no reset)
+    #[arg(long, default_value_t = 0.5)]
+    seal_boundary_blend: f32,
 }
 
 /// Per-book data: separate train and eval sets.
@@ -131,8 +160,23 @@ fn main() {
     }
     fs::create_dir_all(&args.checkpoint_dir).expect("Failed to create checkpoint directory");
 
+    // SEAL configuration (built early so checkpoint resume can use it)
+    let seal_config: Option<SealConfig> = if args.seal {
+        Some(SealConfig {
+            ema_decay: args.seal_ema_decay,
+            sensitivity: args.seal_sensitivity,
+            min_mod: args.seal_min_mod,
+            max_mod: args.seal_max_mod,
+            epsilon: 1e-6,
+            reset_on_document_boundary: args.seal_boundary_reset,
+            boundary_reset_blend: args.seal_boundary_blend,
+        })
+    } else {
+        None
+    };
+
     // Initialize or resume network
-    let (mut pcn, mut completed_books) = if let Some(ref ckpt_path) = args.resume {
+    let (mut pcn, mut completed_books, mut surprise_state) = if let Some(ref ckpt_path) = args.resume {
         eprintln!("Resuming from checkpoint: {}", ckpt_path.display());
         let (data, pcn) =
             pcn::checkpoint::load_checkpoint(ckpt_path, None).expect("Failed to load checkpoint");
@@ -146,12 +190,34 @@ fn main() {
                 data.completed_books.len()
             );
         }
-        (pcn, data.completed_books)
+
+        // Restore SEAL state from checkpoint if available and SEAL is enabled
+        let ss = if args.seal {
+            if let Some(ref seal_data) = data.seal_state {
+                eprintln!("  Restored SEAL surprise state from checkpoint");
+                Some(SurpriseState::from_checkpoint(
+                    seal_data.expected_error.clone(),
+                    seal_data.error_variance.clone(),
+                    seal_data.initialized,
+                ))
+            } else {
+                Some(SurpriseState::new(pcn.dims().len()))
+            }
+        } else {
+            None
+        };
+
+        (pcn, data.completed_books, ss)
     } else {
         let dims = vec![input_dim, args.hidden_size, output_dim];
         let pcn =
             PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create PCN");
-        (pcn, Vec::new())
+        let ss = if args.seal {
+            Some(SurpriseState::new(pcn.dims().len()))
+        } else {
+            None
+        };
+        (pcn, Vec::new(), ss)
     };
 
     let config = Config {
@@ -202,6 +268,17 @@ fn main() {
         eprintln!(
             "  LR decay: {:.4}/epoch, floor={}",
             args.lr_decay, args.min_eta
+        );
+    }
+    if let Some(ref sc) = seal_config {
+        eprintln!("  SEAL: enabled");
+        eprintln!(
+            "    decay={}, sensitivity={}, mod=[{}, {}]",
+            sc.ema_decay, sc.sensitivity, sc.min_mod, sc.max_mod
+        );
+        eprintln!(
+            "    boundary_reset={}, blend={}",
+            sc.reset_on_document_boundary, sc.boundary_reset_blend
         );
     }
     eprintln!();
@@ -264,6 +341,13 @@ fn main() {
         // Reset warm-start hidden states between book chunks
         if let Some(ref mut gpu) = gpu_pcn {
             gpu.warm_hidden = None;
+        }
+
+        // SEAL: document boundary reset at book chunk boundaries
+        if let (Some(ref sc), Some(ref mut ss)) = (&seal_config, &mut surprise_state) {
+            if sc.reset_on_document_boundary {
+                ss.document_boundary_reset();
+            }
         }
         let chunk_names: Vec<String> = book_chunk
             .iter()
@@ -377,24 +461,55 @@ fn main() {
                 let (all_train_inputs, all_train_targets) = combine_book_data(&books, true);
                 let total_train_samples = all_train_inputs.nrows();
 
-                let epoch_metrics = if let Some(ref mut gpu) = gpu_pcn {
-                    gpu::train_epoch_gpu(
-                        gpu,
-                        &all_train_inputs,
-                        &all_train_targets,
-                        args.batch_size,
-                        &section_config,
-                    )
-                } else {
-                    pcn::train_epoch_parallel(
-                        &mut pcn,
-                        &all_train_inputs,
-                        &all_train_targets,
-                        args.batch_size,
-                        &section_config,
-                        &pool,
-                        true,
-                    )
+                let epoch_metrics = match (&mut gpu_pcn, &mut surprise_state, &seal_config) {
+                    // GPU + SEAL
+                    (Some(ref mut gpu), Some(ref mut ss), Some(ref sc)) => {
+                        gpu::train_epoch_gpu_seal(
+                            gpu,
+                            &all_train_inputs,
+                            &all_train_targets,
+                            args.batch_size,
+                            &section_config,
+                            ss,
+                            sc,
+                        )
+                    }
+                    // GPU standard
+                    (Some(ref mut gpu), _, _) => {
+                        gpu::train_epoch_gpu(
+                            gpu,
+                            &all_train_inputs,
+                            &all_train_targets,
+                            args.batch_size,
+                            &section_config,
+                        )
+                    }
+                    // CPU + SEAL
+                    (None, Some(ref mut ss), Some(ref sc)) => {
+                        pcn::train_epoch_parallel_seal(
+                            &mut pcn,
+                            &all_train_inputs,
+                            &all_train_targets,
+                            args.batch_size,
+                            &section_config,
+                            &pool,
+                            true,
+                            ss,
+                            sc,
+                        )
+                    }
+                    // CPU standard
+                    _ => {
+                        pcn::train_epoch_parallel(
+                            &mut pcn,
+                            &all_train_inputs,
+                            &all_train_targets,
+                            args.batch_size,
+                            &section_config,
+                            &pool,
+                            true,
+                        )
+                    }
                 };
 
                 let elapsed = epoch_start.elapsed().as_secs_f32();
@@ -445,7 +560,7 @@ fn main() {
                             lr_info,
                         );
 
-                        let epoch_event = serde_json::json!({
+                        let mut epoch_event = serde_json::json!({
                             "type": "epoch",
                             "round": round,
                             "section": section + 1,
@@ -460,6 +575,16 @@ fn main() {
                             "eta": section_config.eta,
                             "epochs_without_improvement": epochs_without_improvement,
                         });
+
+                        // Add SEAL diagnostics if enabled
+                        if let Some(ref ss) = surprise_state {
+                            epoch_event["seal"] = serde_json::json!({
+                                "modulation": ss.last_modulation,
+                                "surprise": ss.last_surprise,
+                                "expected_error": ss.expected_error,
+                            });
+                        }
+
                         writeln!(metrics_file, "{}", epoch_event)
                             .expect("Failed to write metrics");
 
@@ -505,6 +630,7 @@ fn main() {
                                 metrics.avg_loss,
                                 overall_accuracy,
                                 completed_books.clone(),
+                                surprise_state.as_ref(),
                             ) {
                                 Ok(()) => {
                                     eprintln!(
@@ -573,6 +699,7 @@ fn main() {
             0.0,
             0.0,
             completed_books.clone(),
+            surprise_state.as_ref(),
         ) {
             Ok(()) => {
                 eprintln!(
@@ -588,7 +715,15 @@ fn main() {
 
     // Final checkpoint
     let final_path = args.checkpoint_dir.join("final.json");
-    let _ = save_checkpoint(&pcn, &final_path, args.epochs, 0.0, 0.0, completed_books);
+    let _ = save_checkpoint(
+        &pcn,
+        &final_path,
+        args.epochs,
+        0.0,
+        0.0,
+        completed_books,
+        surprise_state.as_ref(),
+    );
     eprintln!(
         "\nTraining complete. Final checkpoint: {}",
         final_path.display()

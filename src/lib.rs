@@ -36,14 +36,50 @@ pub mod utils;
 pub use core::{Activation, IdentityActivation, PCNError, PCNResult, State, TanhActivation, PCN};
 pub use pool::{BufferPool, PoolStats};
 pub use training::{
-    train_batch, train_batch_parallel, train_epoch, train_epoch_parallel, train_sample,
-    EpochMetrics, Metrics,
+    train_batch, train_batch_parallel, train_batch_seal, train_epoch, train_epoch_parallel,
+    train_epoch_parallel_seal, train_sample, EpochMetrics, Metrics, SurpriseState,
 };
 
 pub use data::{
     clean_text, load_book, normalize, strip_gutenberg_markers, text_to_samples, train_eval_split,
     SampleConfig, Vocabulary,
 };
+
+/// SEAL (Surprise-gated Exponential-Average Learning) configuration.
+///
+/// Modulates the Hebbian learning rate per-layer based on how surprising
+/// current prediction errors are relative to recent history.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SealConfig {
+    /// EMA decay rate for tracking expected errors. Default 0.1.
+    pub ema_decay: f32,
+    /// Sigmoid sensitivity controlling surprise response. Default 5.0.
+    pub sensitivity: f32,
+    /// Minimum modulation factor (dampening floor). Default 0.3.
+    pub min_mod: f32,
+    /// Maximum modulation factor (boost ceiling). Default 1.7.
+    pub max_mod: f32,
+    /// Small constant to prevent division by zero. Default 1e-6.
+    pub epsilon: f32,
+    /// Whether to reset EMA at document boundaries. Default true.
+    pub reset_on_document_boundary: bool,
+    /// Blend factor for boundary resets (0 = full reset, 1 = no reset). Default 0.5.
+    pub boundary_reset_blend: f32,
+}
+
+impl Default for SealConfig {
+    fn default() -> Self {
+        Self {
+            ema_decay: 0.1,
+            sensitivity: 5.0,
+            min_mod: 0.3,
+            max_mod: 1.7,
+            epsilon: 1e-6,
+            reset_on_document_boundary: true,
+            boundary_reset_blend: 0.5,
+        }
+    }
+}
 
 /// Training configuration.
 #[derive(Debug, Clone)]

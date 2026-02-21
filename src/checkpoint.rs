@@ -5,9 +5,18 @@
 //! so we store the activation name and reconstruct on load.
 
 use crate::core::{Activation, IdentityActivation, TanhActivation, PCN};
+use crate::training::SurpriseState;
 use ndarray::{Array1, Array2};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Serializable SEAL surprise state for checkpointing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SealCheckpointData {
+    pub expected_error: Vec<f32>,
+    pub error_variance: Vec<f32>,
+    pub initialized: bool,
+}
 
 /// Serializable checkpoint data.
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,6 +38,9 @@ pub struct CheckpointData {
     /// Books that have been fully trained (for incremental resume).
     #[serde(default)]
     pub completed_books: Vec<String>,
+    /// SEAL surprise state for resuming surprise-gated training.
+    #[serde(default)]
+    pub seal_state: Option<SealCheckpointData>,
 }
 
 /// Convert an Array2 to Vec<Vec<f32>> for serialization.
@@ -69,7 +81,14 @@ pub fn save_checkpoint(
     avg_energy: f32,
     accuracy: f32,
     completed_books: Vec<String>,
+    seal_state: Option<&SurpriseState>,
 ) -> Result<(), String> {
+    let seal_checkpoint = seal_state.map(|ss| SealCheckpointData {
+        expected_error: ss.expected_error.clone(),
+        error_variance: ss.error_variance.clone(),
+        initialized: ss.initialized,
+    });
+
     let data = CheckpointData {
         dims: pcn.dims.clone(),
         activation_name: pcn.activation.name().to_string(),
@@ -79,6 +98,7 @@ pub fn save_checkpoint(
         avg_energy,
         accuracy,
         completed_books,
+        seal_state: seal_checkpoint,
     };
 
     let json = serde_json::to_string_pretty(&data)
@@ -155,7 +175,7 @@ mod tests {
         let path = dir.join("test_checkpoint.json");
 
         // Save
-        let result = save_checkpoint(&pcn, &path, 5, 0.42, 0.15, vec![]);
+        let result = save_checkpoint(&pcn, &path, 5, 0.42, 0.15, vec![], None);
         assert!(result.is_ok(), "Failed to save: {:?}", result.err());
 
         // Load
@@ -194,7 +214,7 @@ mod tests {
         let dir = std::env::temp_dir().join("pcn_test_checkpoint_override");
         let path = dir.join("test_override.json");
 
-        save_checkpoint(&pcn, &path, 1, 1.0, 0.0, vec![]).expect("save");
+        save_checkpoint(&pcn, &path, 1, 1.0, 0.0, vec![], None).expect("save");
 
         // Load with identity activation override
         let (_data, loaded_pcn) =
@@ -213,7 +233,7 @@ mod tests {
         let path = dir.join("checkpoint.json");
 
         let pcn = make_test_pcn();
-        let result = save_checkpoint(&pcn, &path, 0, 0.0, 0.0, vec![]);
+        let result = save_checkpoint(&pcn, &path, 0, 0.0, 0.0, vec![], None);
         assert!(result.is_ok());
         assert!(path.exists());
 
@@ -230,5 +250,49 @@ mod tests {
     fn test_unknown_activation_name() {
         let result = activation_from_name("relu");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_checkpoint_with_seal_state() {
+        let pcn = make_test_pcn();
+        let dir = std::env::temp_dir().join("pcn_test_checkpoint_seal");
+        let path = dir.join("seal_checkpoint.json");
+
+        let ss = SurpriseState::from_checkpoint(
+            vec![0.5, 1.2, 0.3],
+            vec![0.01, 0.02, 0.03],
+            true,
+        );
+
+        let result = save_checkpoint(&pcn, &path, 10, 0.35, 0.25, vec![], Some(&ss));
+        assert!(result.is_ok());
+
+        let (data, _pcn) = load_checkpoint(&path, None).expect("load");
+        assert!(data.seal_state.is_some());
+
+        let seal_data = data.seal_state.expect("seal_state");
+        assert_eq!(seal_data.expected_error, vec![0.5, 1.2, 0.3]);
+        assert_eq!(seal_data.error_variance, vec![0.01, 0.02, 0.03]);
+        assert!(seal_data.initialized);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_checkpoint_without_seal_backward_compat() {
+        let pcn = make_test_pcn();
+        let dir = std::env::temp_dir().join("pcn_test_checkpoint_no_seal");
+        let path = dir.join("no_seal_checkpoint.json");
+
+        // Save without SEAL state
+        save_checkpoint(&pcn, &path, 1, 1.0, 0.0, vec![], None).expect("save");
+
+        let (data, _pcn) = load_checkpoint(&path, None).expect("load");
+        assert!(
+            data.seal_state.is_none(),
+            "Old checkpoints should have seal_state = None"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -172,3 +172,59 @@ pub fn read_energy_scalar<B: Backend>(energy: &Tensor<B, 1>) -> f32 {
 pub fn compute_batch_energy_gpu<B: Backend>(state: &GpuBatchState<B>) -> f32 {
     read_energy_scalar(&compute_batch_energy_gpu_tensor(state))
 }
+
+/// Compute per-layer error norms on GPU and return as Vec<f32>.
+///
+/// For each layer l: `sqrt(sum(eps[l]^2) / batch_size)`
+/// Small GPU->CPU sync (one scalar per layer).
+#[allow(clippy::cast_precision_loss)]
+pub fn compute_layer_error_norms_gpu<B: Backend>(
+    state: &GpuBatchState<B>,
+    batch_size: usize,
+) -> Vec<f32> {
+    state
+        .eps
+        .iter()
+        .map(|eps| {
+            // sum of squared elements / batch_size, then sqrt
+            let sum_sq = eps.clone().mul(eps.clone()).sum();
+            let mean_sq = sum_sq.div_scalar(batch_size as f32);
+            let norm = mean_sq.sqrt();
+            norm.into_data().to_vec::<f32>().expect("scalar")[0]
+        })
+        .collect()
+}
+
+/// Batch-averaged Hebbian weight update on GPU with per-layer SEAL modulation.
+///
+/// Same as `update_weights_gpu` but each layer l uses:
+///   scale[l] = (eta * modulation[l-1]) / batch_size
+#[allow(clippy::cast_precision_loss)]
+pub fn update_weights_gpu_seal<B: Backend>(
+    state: &GpuBatchState<B>,
+    w: &mut [Tensor<B, 2>],
+    b: &mut [Tensor<B, 1>],
+    eta: f32,
+    batch_size: usize,
+    l_max: usize,
+    modulation: &[f32],
+    device: &B::Device,
+) {
+    for l in 1..=l_max {
+        let scale = eta * modulation[l - 1] / batch_size as f32;
+        let scale_tensor: Tensor<B, 1> =
+            Tensor::from_data(TensorData::new(vec![scale], [1]), device);
+        let scale_2d = scale_tensor.clone().reshape([1, 1]);
+
+        let f_x_l = state.tanh_x[l].clone();
+
+        // delta_w = eps[l-1]^T @ f_x_l
+        let delta_w = state.eps[l - 1].clone().transpose().matmul(f_x_l);
+
+        w[l] = w[l].clone() + delta_w.mul(scale_2d);
+
+        // bias: sum eps[l-1] over batch dimension
+        let bias_delta = state.eps[l - 1].clone().sum_dim(0).squeeze(0);
+        b[l - 1] = b[l - 1].clone() + bias_delta.mul(scale_tensor);
+    }
+}

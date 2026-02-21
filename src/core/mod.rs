@@ -462,9 +462,11 @@ impl PCN {
             }
 
             // 2. Max prediction error is small
-            let max_error = state.eps.iter().map(|e| {
-                e.iter().map(|v| v.abs()).fold(0.0f32, f32::max)
-            }).fold(0.0f32, f32::max);
+            let max_error = state
+                .eps
+                .iter()
+                .map(|e| e.iter().map(|v| v.abs()).fold(0.0f32, f32::max))
+                .fold(0.0f32, f32::max);
 
             if max_error < threshold {
                 state.steps_taken = step + 1;
@@ -905,7 +907,7 @@ mod tests {
         let act = TanhActivation;
         let x = ndarray::array![0.0, 1.0, -1.0];
         let fx = act.apply(&x);
-        
+
         // tanh(0) ≈ 0
         assert!((fx[0] - 0.0).abs() < 1e-5);
         // tanh(1) ≈ 0.762
@@ -920,7 +922,7 @@ mod tests {
         let x = ndarray::array![0.0, 1.0, -1.0];
         let fx = act.apply(&x);
         assert_eq!(fx, x);
-        
+
         let dx = act.derivative(&x);
         assert_eq!(dx, ndarray::array![1.0, 1.0, 1.0]);
     }
@@ -930,13 +932,15 @@ mod tests {
         let dims = vec![2, 3, 2];
         let pcn = PCN::new(dims).unwrap();
         let mut state = pcn.init_state();
-        
+
         // Set input
         state.x[0] = ndarray::array![1.0, 0.5];
-        
+
         // Relax with convergence
-        let steps = pcn.relax_with_convergence(&mut state, 1e-5, 100, 0.01).unwrap();
-        
+        let steps = pcn
+            .relax_with_convergence(&mut state, 1e-5, 100, 0.01)
+            .unwrap();
+
         // Should have recorded steps and energy
         assert!(steps > 0);
         assert_eq!(steps, state.steps_taken);
@@ -948,12 +952,12 @@ mod tests {
         let dims = vec![2, 3, 2];
         let pcn = PCN::new(dims).unwrap();
         let mut state = pcn.init_state();
-        
+
         state.x[0] = ndarray::array![1.0, 0.5];
-        
+
         // Relax with defaults
         let steps = pcn.relax_adaptive(&mut state, 200, 0.01).unwrap();
-        
+
         // Should have recorded statistics
         assert!(steps > 0 && steps <= 200);
         assert_eq!(steps, state.steps_taken);
@@ -966,7 +970,7 @@ mod tests {
         let pcn = PCN::new(dims).unwrap();
         let batch_size = 5;
         let state = pcn.init_batch_state(batch_size);
-        
+
         assert_eq!(state.batch_size, batch_size);
         assert_eq!(state.x[0].shape(), &[batch_size, 2]);
         assert_eq!(state.x[1].shape(), &[batch_size, 4]);

@@ -13,8 +13,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use ndarray::Array2;
 use pcn::{
-    train_batch, train_batch_parallel, train_epoch, train_epoch_parallel, train_sample,
-    BufferPool, Config, TanhActivation, PCN,
+    train_batch, train_batch_parallel, train_epoch, train_epoch_parallel, train_sample, BufferPool,
+    Config, TanhActivation, PCN,
 };
 
 /// Generate XOR dataset as Array2 (4 samples).
@@ -25,7 +25,11 @@ fn xor_dataset() -> (Array2<f32>, Array2<f32>) {
 }
 
 /// Generate a synthetic dataset of given size for benchmarking.
-fn synthetic_dataset(num_samples: usize, input_dim: usize, output_dim: usize) -> (Array2<f32>, Array2<f32>) {
+fn synthetic_dataset(
+    num_samples: usize,
+    input_dim: usize,
+    output_dim: usize,
+) -> (Array2<f32>, Array2<f32>) {
     use ndarray_rand::RandomExt;
     use rand::distributions::Uniform;
 

@@ -1,14 +1,17 @@
-//! Dataset loading and preprocessing.
+//! Dataset loading, text processing, and vocabulary management.
 //!
-//! Handles loading from local files in /bulk-storage/localdocs,
-//! normalization, shuffling, and batching.
+//! ## Submodules
+//!
+//! - [`vocab`] — Character vocabulary and one-hot encoding
+//! - [`samples`] — Text-to-sample conversion for next-character prediction
 
-/// Load a dataset from a local path.
-pub fn load_dataset(_path: &str) -> Result<Vec<(Vec<f32>, Vec<f32>)>, String> {
-    // TODO: implement dataset loading
-    // Support: JSON, CSV, binary formats
-    Err("not yet implemented".to_string())
-}
+pub mod samples;
+pub mod vocab;
+
+pub use samples::{
+    clean_text, load_book, strip_gutenberg_markers, text_to_samples, train_eval_split, SampleConfig,
+};
+pub use vocab::Vocabulary;
 
 /// Normalize data to a target range.
 pub fn normalize(data: &mut [f32], min: f32, max: f32) {

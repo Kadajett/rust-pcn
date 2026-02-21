@@ -63,17 +63,26 @@ fn test_xor_training() {
 
             // Relax for equilibrium
             for _ in 0..config.relax_steps {
-                network.compute_errors(&mut state).expect("compute_errors failed");
-                network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+                network
+                    .compute_errors(&mut state)
+                    .expect("compute_errors failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("relax_step failed");
 
                 // Optionally clamp output on last step
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
             // Final error computation
-            network.compute_errors(&mut state).expect("compute_errors failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
 
             // Track energy
             let energy = network.compute_energy(&state);
@@ -81,7 +90,9 @@ fn test_xor_training() {
             sample_count += 1;
 
             // Update weights
-            network.update_weights(&state, config.eta).expect("update_weights failed");
+            network
+                .update_weights(&state, config.eta)
+                .expect("update_weights failed");
         }
 
         // Average energy for this epoch
@@ -119,10 +130,16 @@ fn test_xor_training() {
 
         // Relax without clamping output
         for _ in 0..config.relax_steps {
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("relax_step failed");
         }
-        network.compute_errors(&mut state).expect("compute_errors failed");
+        network
+            .compute_errors(&mut state)
+            .expect("compute_errors failed");
 
         // Get output prediction
         let last = state.x.len() - 1;
@@ -187,16 +204,27 @@ fn test_energy_decrease_during_training() {
             state.x[0] = input.clone();
 
             for _ in 0..config.relax_steps {
-                network.compute_errors(&mut state).expect("compute_errors failed");
-                network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+                network
+                    .compute_errors(&mut state)
+                    .expect("compute_errors failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("relax_step failed");
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
-            network.compute_errors(&mut state).expect("compute_errors failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
             epoch_energy += network.compute_energy(&state);
-            network.update_weights(&state, config.eta).expect("update_weights failed");
+            network
+                .update_weights(&state, config.eta)
+                .expect("update_weights failed");
         }
 
         epoch_energy /= training_data.len() as f32;
@@ -251,14 +279,23 @@ fn test_training_stability_with_small_eta() {
             state.x[0] = input.clone();
 
             for _ in 0..config.relax_steps {
-                network.compute_errors(&mut state).expect("compute_errors failed");
-                network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+                network
+                    .compute_errors(&mut state)
+                    .expect("compute_errors failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("relax_step failed");
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
-            network.compute_errors(&mut state).expect("compute_errors failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
             let energy = network.compute_energy(&state);
 
             // Check for divergence (energy exploding)
@@ -268,7 +305,9 @@ fn test_training_stability_with_small_eta() {
             }
 
             epoch_energy += energy;
-            network.update_weights(&state, config.eta).expect("update_weights failed");
+            network
+                .update_weights(&state, config.eta)
+                .expect("update_weights failed");
         }
 
         epoch_energy /= training_data.len() as f32;
@@ -314,15 +353,26 @@ fn test_convergence_on_linear_problem() {
             state.x[0] = input.clone();
 
             for _ in 0..config.relax_steps {
-                network.compute_errors(&mut state).expect("compute_errors failed");
-                network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+                network
+                    .compute_errors(&mut state)
+                    .expect("compute_errors failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("relax_step failed");
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.update_weights(&state, config.eta).expect("update_weights failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .update_weights(&state, config.eta)
+                .expect("update_weights failed");
         }
     }
 
@@ -333,12 +383,21 @@ fn test_convergence_on_linear_problem() {
         state.x[0] = input.clone();
 
         for _ in 0..config.relax_steps {
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("relax_step failed");
         }
-        network.compute_errors(&mut state).expect("compute_errors failed");
+        network
+            .compute_errors(&mut state)
+            .expect("compute_errors failed");
 
-        let output = { let last = state.x.len() - 1; state.x[last][0] };
+        let output = {
+            let last = state.x.len() - 1;
+            state.x[last][0]
+        };
         // Use a threshold for classification
         let prediction: f32 = if output > 0.5 { 1.0 } else { 0.0 };
         let target_binary: f32 = if target[0] > 0.5 { 1.0 } else { 0.0 };
@@ -384,15 +443,26 @@ fn test_batch_training() {
         state.x[0] = input.clone();
 
         for _ in 0..config.relax_steps {
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("relax_step failed");
             if config.clamp_output {
-                { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                {
+                    let last = state.x.len() - 1;
+                    state.x[last] = target.clone();
+                }
             }
         }
 
-        network.compute_errors(&mut state).expect("compute_errors failed");
-        network.update_weights(&state, config.eta).expect("update_weights failed");
+        network
+            .compute_errors(&mut state)
+            .expect("compute_errors failed");
+        network
+            .update_weights(&state, config.eta)
+            .expect("update_weights failed");
     }
 
     // Verify network can make predictions without errors
@@ -400,13 +470,22 @@ fn test_batch_training() {
     state.x[0] = ndarray::arr1(&[0.3, 0.7]);
 
     for _ in 0..config.relax_steps {
-        network.compute_errors(&mut state).expect("compute_errors failed");
-        network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+        network
+            .compute_errors(&mut state)
+            .expect("compute_errors failed");
+        network
+            .relax_step(&mut state, config.alpha)
+            .expect("relax_step failed");
     }
-    network.compute_errors(&mut state).expect("compute_errors failed");
+    network
+        .compute_errors(&mut state)
+        .expect("compute_errors failed");
 
     // Should produce output in reasonable range
-    let output = { let last = state.x.len() - 1; state.x[last][0] };
+    let output = {
+        let last = state.x.len() - 1;
+        state.x[last][0]
+    };
     assert!(
         output.is_finite(),
         "Output should be a finite number (got {})",
@@ -442,20 +521,41 @@ fn test_weights_updated_during_training() {
         state.x[0] = input.clone();
 
         for _ in 0..config.relax_steps {
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("relax_step failed");
             if config.clamp_output {
-                { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                {
+                    let last = state.x.len() - 1;
+                    state.x[last] = target.clone();
+                }
             }
         }
 
-        network.compute_errors(&mut state).expect("compute_errors failed");
-        network.update_weights(&state, config.eta).expect("update_weights failed");
+        network
+            .compute_errors(&mut state)
+            .expect("compute_errors failed");
+        network
+            .update_weights(&state, config.eta)
+            .expect("update_weights failed");
     }
 
     // Check that at least some weights changed
-    let weights_changed = (network.w[1].clone() - initial_w).mapv(f32::abs).iter().cloned().fold(0.0f32, f32::max) > 1e-6;
-    let biases_changed = (network.b[0].clone() - initial_b).mapv(f32::abs).iter().cloned().fold(0.0f32, f32::max) > 1e-6;
+    let weights_changed = (network.w[1].clone() - initial_w)
+        .mapv(f32::abs)
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max)
+        > 1e-6;
+    let biases_changed = (network.b[0].clone() - initial_b)
+        .mapv(f32::abs)
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max)
+        > 1e-6;
 
     assert!(
         weights_changed || biases_changed,
@@ -488,15 +588,26 @@ fn test_deep_network_training() {
             state.x[0] = input.clone();
 
             for _ in 0..config.relax_steps {
-                network.compute_errors(&mut state).expect("compute_errors failed");
-                network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+                network
+                    .compute_errors(&mut state)
+                    .expect("compute_errors failed");
+                network
+                    .relax_step(&mut state, config.alpha)
+                    .expect("relax_step failed");
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.update_weights(&state, config.eta).expect("update_weights failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .update_weights(&state, config.eta)
+                .expect("update_weights failed");
         }
     }
 
@@ -506,13 +617,23 @@ fn test_deep_network_training() {
         state.x[0] = input.clone();
 
         for _ in 0..config.relax_steps {
-            network.compute_errors(&mut state).expect("compute_errors failed");
-            network.relax_step(&mut state, config.alpha).expect("relax_step failed");
+            network
+                .compute_errors(&mut state)
+                .expect("compute_errors failed");
+            network
+                .relax_step(&mut state, config.alpha)
+                .expect("relax_step failed");
         }
-        network.compute_errors(&mut state).expect("compute_errors failed");
+        network
+            .compute_errors(&mut state)
+            .expect("compute_errors failed");
 
         assert!(
-            { let last = state.x.len() - 1; state.x[last][0] }.is_finite(),
+            {
+                let last = state.x.len() - 1;
+                state.x[last][0]
+            }
+            .is_finite(),
             "Output should be finite"
         );
     }
@@ -530,14 +651,18 @@ fn test_deterministic_error_computation() {
     state.x[2] = ndarray::arr1(&[0.4]);
 
     // Compute errors twice
-    network.compute_errors(&mut state).expect("compute_errors failed");
+    network
+        .compute_errors(&mut state)
+        .expect("compute_errors failed");
     let errors_first = vec![
         state.eps[0].clone(),
         state.eps[1].clone(),
         state.eps[2].clone(),
     ];
 
-    network.compute_errors(&mut state).expect("compute_errors failed");
+    network
+        .compute_errors(&mut state)
+        .expect("compute_errors failed");
     let errors_second = vec![
         state.eps[0].clone(),
         state.eps[1].clone(),
@@ -604,7 +729,11 @@ fn generate_spiral_data(n_points: usize, n_turns: usize) -> Vec<(ndarray::Array1
         let y_norm = y / (n_turns as f32);
 
         // Class based on turn number: -0.9 or 0.9 alternating (bipolar for tanh)
-        let class = if (t / (std::f32::consts::PI * 2.0)) as usize % 2 == 0 { -0.9 } else { 0.9 };
+        let class = if (t / (std::f32::consts::PI * 2.0)) as usize % 2 == 0 {
+            -0.9
+        } else {
+            0.9
+        };
 
         data.push((ndarray::arr1(&[x_norm, y_norm]), class));
     }
@@ -643,8 +772,12 @@ fn train_and_report(
     let mut epoch_energies = Vec::new();
     let mut total_steps = 0usize;
 
-    println!("\n{}: Starting training ({} epochs, {} samples/epoch)", 
-             test_name, num_epochs, training_data.len());
+    println!(
+        "\n{}: Starting training ({} epochs, {} samples/epoch)",
+        test_name,
+        num_epochs,
+        training_data.len()
+    );
 
     // ===== TRAINING PHASE =====
     for epoch in 0..num_epochs {
@@ -665,7 +798,10 @@ fn train_and_report(
                     .expect("Relaxation failed");
 
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = ndarray::arr1(&[*target]);
+                    }
                 }
             }
 
@@ -688,7 +824,9 @@ fn train_and_report(
         if epoch % (num_epochs.max(10) / 10) == 0 || epoch == num_epochs - 1 {
             println!(
                 "  Epoch {:>3}/{}: Avg Energy = {:.6}",
-                epoch, num_epochs - 1, avg_energy
+                epoch,
+                num_epochs - 1,
+                avg_energy
             );
         }
     }
@@ -712,7 +850,10 @@ fn train_and_report(
             .compute_errors(&mut state)
             .expect("Error computation failed");
 
-        let output = { let last = state.x.len() - 1; state.x[last][0] };
+        let output = {
+            let last = state.x.len() - 1;
+            state.x[last][0]
+        };
 
         // Sign-based accuracy: correct if output sign matches target sign
         if (output > 0.0) == (*target > 0.0) {
@@ -726,13 +867,12 @@ fn train_and_report(
     let energy_decrease = initial_energy - final_energy;
     let avg_steps = total_steps as f32 / (num_epochs * training_data.len()) as f32;
 
-    println!(
-        "{}: FINAL REPORT",
-        test_name
-    );
+    println!("{}: FINAL REPORT", test_name);
     println!(
         "  Accuracy: {:.2}% ({}/{} correct)",
-        accuracy * 100.0, correct, training_data.len()
+        accuracy * 100.0,
+        correct,
+        training_data.len()
     );
     println!(
         "  Energy: initial={:.6}, final={:.6}, decrease={:.6}",
@@ -757,11 +897,8 @@ fn test_spiral_with_tanh() {
 
     // Network: 2 inputs -> 8 hidden -> 1 output
     let dims = vec![2, 8, 1];
-    let mut network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let config = Config {
         relax_steps: 50,
@@ -791,7 +928,10 @@ fn test_spiral_with_tanh() {
                     .expect("Relaxation failed");
 
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = ndarray::arr1(&[*target]);
+                    }
                 }
             }
 
@@ -845,7 +985,10 @@ fn test_spiral_with_tanh() {
             .compute_errors(&mut state)
             .expect("Error computation failed");
 
-        let output = { let last = state.x.len() - 1; state.x[last][0] };
+        let output = {
+            let last = state.x.len() - 1;
+            state.x[last][0]
+        };
 
         // Sign-based accuracy with bipolar targets
         if (output > 0.0) == (*target > 0.0) {
@@ -871,11 +1014,8 @@ fn test_tanh_weight_updates_on_spiral() {
     let dims = vec![2, 4, 1];
 
     // Train with tanh
-    let mut network_tanh = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network_tanh = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let config = Config {
         relax_steps: 30,
@@ -900,7 +1040,10 @@ fn test_tanh_weight_updates_on_spiral() {
                     .relax_step(&mut state, config.alpha)
                     .expect("Relaxation failed");
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = ndarray::arr1(&[*target]);
+                    }
                 }
             }
 
@@ -915,7 +1058,11 @@ fn test_tanh_weight_updates_on_spiral() {
 
     // Verify weights were updated
     let final_w_tanh = network_tanh.w[1].clone();
-    let w_change = (final_w_tanh - initial_w_tanh).mapv(f32::abs).iter().cloned().fold(0.0f32, f32::max);
+    let w_change = (final_w_tanh - initial_w_tanh)
+        .mapv(f32::abs)
+        .iter()
+        .cloned()
+        .fold(0.0f32, f32::max);
 
     println!("Tanh weight change after spiral training: {}", w_change);
 
@@ -932,11 +1079,8 @@ fn test_convergence_on_spiral_samples() {
     let training_data = generate_spiral(10, 2);
     let dims = vec![2, 4, 1];
 
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut total_steps = 0;
     let mut num_samples = 0;
@@ -945,7 +1089,10 @@ fn test_convergence_on_spiral_samples() {
     for (input, target) in training_data.iter() {
         let mut state = network.init_state();
         state.x[0] = input.clone();
-        { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+        {
+            let last = state.x.len() - 1;
+            state.x[last] = ndarray::arr1(&[*target]);
+        }
 
         let steps_taken = network
             .relax_with_convergence(&mut state, 1e-5, 500, 0.05)
@@ -992,11 +1139,8 @@ fn test_phase2_xor_with_tanh_high_accuracy() {
 
     // Network: 2 inputs -> 4 hidden -> 1 output (small enough to converge quickly)
     let dims = vec![2, 4, 1];
-    let mut network = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
 
     let config = Config {
         relax_steps: 40,
@@ -1043,11 +1187,8 @@ fn test_phase2_spiral_nonlinear_boundary() {
 
     // Network: 2 inputs -> 8 hidden -> 1 output
     let dims = vec![2, 8, 1];
-    let mut network = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
 
     let config = Config {
         relax_steps: 50,
@@ -1090,11 +1231,8 @@ fn test_phase2_energy_never_increases_during_relaxation() {
     let training_data = generate_xor_data();
     let dims = vec![2, 4, 1];
 
-    let mut network = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
 
     let config = Config {
         relax_steps: 100,
@@ -1129,7 +1267,10 @@ fn test_phase2_energy_never_increases_during_relaxation() {
     let (input, target) = &training_data[0];
     let mut state = network.init_state();
     state.x[0] = input.clone();
-    { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+    {
+        let last = state.x.len() - 1;
+        state.x[last] = ndarray::arr1(&[*target]);
+    }
 
     network
         .compute_errors(&mut state)
@@ -1189,11 +1330,8 @@ fn test_phase2_adaptive_convergence_fewer_steps() {
     let training_data = generate_xor_data();
     let dims = vec![2, 4, 1];
 
-    let network = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
 
     let alpha = 0.1; // Higher alpha for faster convergence with Xavier-initialized weights
     let max_steps = 2000;
@@ -1205,7 +1343,10 @@ fn test_phase2_adaptive_convergence_fewer_steps() {
     for (input, target) in &training_data {
         let mut state = network.init_state();
         state.x[0] = input.clone();
-        { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+        {
+            let last = state.x.len() - 1;
+            state.x[last] = ndarray::arr1(&[*target]);
+        }
 
         let steps_taken = network
             .relax_with_convergence(&mut state, 1e-2, max_steps, alpha)
@@ -1214,8 +1355,8 @@ fn test_phase2_adaptive_convergence_fewer_steps() {
         adaptive_steps_vec.push(steps_taken);
     }
 
-    let avg_adaptive_steps = adaptive_steps_vec.iter().sum::<usize>() as f32
-        / adaptive_steps_vec.len() as f32;
+    let avg_adaptive_steps =
+        adaptive_steps_vec.iter().sum::<usize>() as f32 / adaptive_steps_vec.len() as f32;
 
     println!(
         "  Adaptive: {:.1} steps on average (max {})",
@@ -1226,15 +1367,20 @@ fn test_phase2_adaptive_convergence_fewer_steps() {
     assert!(
         avg_adaptive_steps < max_steps as f32,
         "Adaptive convergence should converge within max_steps (got {:.1} / {})",
-        avg_adaptive_steps, max_steps
+        avg_adaptive_steps,
+        max_steps
     );
 
     // Most individual samples should converge (allow some edge cases to hit max)
-    let converged = adaptive_steps_vec.iter().filter(|&&s| s < max_steps).count();
+    let converged = adaptive_steps_vec
+        .iter()
+        .filter(|&&s| s < max_steps)
+        .count();
     assert!(
         converged >= adaptive_steps_vec.len() / 2,
         "At least half of samples should converge ({}/{})",
-        converged, adaptive_steps_vec.len()
+        converged,
+        adaptive_steps_vec.len()
     );
 }
 
@@ -1248,11 +1394,8 @@ fn test_phase2_weight_learning_with_tanh() {
     let training_data = generate_xor_data();
     let dims = vec![2, 4, 1];
 
-    let mut network = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
 
     let config = Config {
         relax_steps: 30,
@@ -1282,7 +1425,10 @@ fn test_phase2_weight_learning_with_tanh() {
                     .expect("Relaxation failed");
 
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[*target]); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = ndarray::arr1(&[*target]);
+                    }
                 }
             }
 
@@ -1300,7 +1446,13 @@ fn test_phase2_weight_learning_with_tanh() {
                 .w
                 .iter()
                 .zip(initial_w.iter())
-                .map(|(w, w0)| (w - w0).mapv(f32::abs).iter().cloned().fold(0.0f32, f32::max))
+                .map(|(w, w0)| {
+                    (w - w0)
+                        .mapv(f32::abs)
+                        .iter()
+                        .cloned()
+                        .fold(0.0f32, f32::max)
+                })
                 .sum::<f32>();
             println!("  After 50 epochs: Weight change = {:.6}", w_change_mid);
         }
@@ -1311,12 +1463,20 @@ fn test_phase2_weight_learning_with_tanh() {
     let mut total_b_change = 0.0f32;
 
     for (w, w0) in network.w.iter().zip(initial_w.iter()) {
-        let change = (w - w0).mapv(f32::abs).iter().cloned().fold(0.0f32, f32::max);
+        let change = (w - w0)
+            .mapv(f32::abs)
+            .iter()
+            .cloned()
+            .fold(0.0f32, f32::max);
         total_w_change += change;
     }
 
     for (b, b0) in network.b.iter().zip(initial_b.iter()) {
-        let change = (b - b0).mapv(f32::abs).iter().cloned().fold(0.0f32, f32::max);
+        let change = (b - b0)
+            .mapv(f32::abs)
+            .iter()
+            .cloned()
+            .fold(0.0f32, f32::max);
         total_b_change += change;
     }
 
@@ -1361,20 +1521,27 @@ fn test_phase2_tanh_vs_identity_on_xor() {
 
     // Test with identity (Phase 1 baseline)
     let mut network_identity = PCN::new(dims.clone()).expect("Failed to create network");
-    let (_acc_identity, _energy_id, _steps_id) =
-        train_and_report(&mut network_identity, &training_data, config.clone(), num_epochs, "Phase1::XOR+Identity");
+    let (_acc_identity, _energy_id, _steps_id) = train_and_report(
+        &mut network_identity,
+        &training_data,
+        config.clone(),
+        num_epochs,
+        "Phase1::XOR+Identity",
+    );
 
     // Test with tanh (Phase 2)
-    let mut network_tanh = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
-    let (acc_tanh, _energy_tanh, _steps_tanh) =
-        train_and_report(&mut network_tanh, &training_data, config, num_epochs, "Phase2::XOR+Tanh");
+    let mut network_tanh =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
+    let (acc_tanh, _energy_tanh, _steps_tanh) = train_and_report(
+        &mut network_tanh,
+        &training_data,
+        config,
+        num_epochs,
+        "Phase2::XOR+Tanh",
+    );
 
     // Tanh training should produce non-negative accuracy (sanity check).
-    // Note: PCN inference from zero-init produces very small outputs, so 
+    // Note: PCN inference from zero-init produces very small outputs, so
     // sign-based accuracy is noisy. The key validation is energy decrease.
     assert!(
         acc_tanh >= 0.0,
@@ -1390,18 +1557,18 @@ fn test_phase2_tanh_vs_identity_on_xor() {
 #[test]
 fn test_phase2_convergence_metrics_recorded() {
     let dims = vec![2, 3, 1];
-    let network = PCN::with_activation(
-        dims,
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network =
+        PCN::with_activation(dims, Box::new(TanhActivation)).expect("Failed to create network");
 
     let input = ndarray::arr1(&[0.5, 0.5]);
     let target = 1.0f32;
 
     let mut state = network.init_state();
     state.x[0] = input.clone();
-    { let last = state.x.len() - 1; state.x[last] = ndarray::arr1(&[target]); }
+    {
+        let last = state.x.len() - 1;
+        state.x[last] = ndarray::arr1(&[target]);
+    }
 
     // Relax with adaptive stopping
     network

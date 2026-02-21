@@ -476,8 +476,7 @@ pub fn train_epoch_parallel(
         let (batch_inputs, batch_targets) =
             extract_batch(inputs, targets, &indices[start..end], current_batch_size);
 
-        let batch_metrics =
-            train_batch_parallel(pcn, &batch_inputs, &batch_targets, config, pool)?;
+        let batch_metrics = train_batch_parallel(pcn, &batch_inputs, &batch_targets, config, pool)?;
         all_batch_losses.extend(batch_metrics.batch_losses);
         total_energy += batch_metrics.avg_loss * current_batch_size as f32;
     }
@@ -707,8 +706,7 @@ mod tests {
         let batch_inputs = Array2::from_elem((4, 2), 0.1);
         let batch_targets = Array2::from_elem((4, 2), 0.0);
 
-        let result =
-            train_batch_parallel(&mut pcn, &batch_inputs, &batch_targets, &config, &pool);
+        let result = train_batch_parallel(&mut pcn, &batch_inputs, &batch_targets, &config, &pool);
         assert!(result.is_ok());
 
         let metrics = result.expect("metrics");
@@ -729,8 +727,7 @@ mod tests {
         let inputs = Array2::from_elem((8, 2), 0.1);
         let targets = Array2::from_elem((8, 2), 0.0);
 
-        let result =
-            train_epoch_parallel(&mut pcn, &inputs, &targets, 4, &config, &pool, false);
+        let result = train_epoch_parallel(&mut pcn, &inputs, &targets, 4, &config, &pool, false);
         assert!(result.is_ok());
 
         let metrics = result.expect("metrics");
@@ -769,9 +766,8 @@ mod tests {
 
         let pool = BufferPool::new(&dims, 4);
 
-        let seq_result =
-            train_batch(&mut pcn_seq_copy, &batch_inputs, &batch_targets, &config)
-                .expect("sequential");
+        let seq_result = train_batch(&mut pcn_seq_copy, &batch_inputs, &batch_targets, &config)
+            .expect("sequential");
         let par_result =
             train_batch_parallel(&mut pcn_par, &batch_inputs, &batch_targets, &config, &pool)
                 .expect("parallel");

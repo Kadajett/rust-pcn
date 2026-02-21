@@ -157,11 +157,8 @@ fn test_tanh_matrix() {
 #[test]
 fn test_convergence_early_stopping() {
     let dims = vec![2, 4, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state = network.init_state();
     state.x[0] = ndarray::arr1(&[0.5, 0.5]);
@@ -188,11 +185,8 @@ fn test_convergence_early_stopping() {
 #[test]
 fn test_convergence_respects_max_steps() {
     let dims = vec![2, 4, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state = network.init_state();
     state.x[0] = ndarray::arr1(&[0.5, 0.5]);
@@ -216,11 +210,8 @@ fn test_convergence_respects_max_steps() {
 #[test]
 fn test_convergence_threshold_effect() {
     let dims = vec![2, 3, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state1 = network.init_state();
     state1.x[0] = ndarray::arr1(&[0.5, 0.5]);
@@ -251,11 +242,8 @@ fn test_convergence_threshold_effect() {
 #[test]
 fn test_convergence_reproducible() {
     let dims = vec![2, 2, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state1 = network.init_state();
     state1.x[0] = ndarray::arr1(&[0.3, 0.7]);
@@ -283,11 +271,8 @@ fn test_convergence_reproducible() {
 #[test]
 fn test_energy_monotonicity_during_relaxation() {
     let dims = vec![2, 3, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state = network.init_state();
     state.x[0] = ndarray::arr1(&[0.5, 0.5]);
@@ -336,11 +321,8 @@ fn test_energy_monotonicity_during_relaxation() {
 #[test]
 fn test_energy_nonnegative() {
     let dims = vec![2, 3, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state = network.init_state();
 
@@ -353,7 +335,11 @@ fn test_energy_nonnegative() {
 
         let energy = network.compute_energy(&state);
 
-        assert!(energy >= 0.0, "Energy should never be negative (got {})", energy);
+        assert!(
+            energy >= 0.0,
+            "Energy should never be negative (got {})",
+            energy
+        );
     }
 }
 
@@ -361,11 +347,8 @@ fn test_energy_nonnegative() {
 #[test]
 fn test_energy_correlates_with_errors() {
     let dims = vec![2, 3, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let mut state1 = network.init_state();
     state1.x[0] = ndarray::arr1(&[0.1, 0.1]);
@@ -400,11 +383,8 @@ fn test_energy_correlates_with_errors() {
 fn test_xor_with_tanh_high_accuracy() {
     // Network: 2 inputs -> 4 hidden -> 1 output
     let dims = vec![2, 4, 1];
-    let mut network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let config = Config {
         relax_steps: 50,
@@ -437,7 +417,10 @@ fn test_xor_with_tanh_high_accuracy() {
                     .expect("Relaxation failed");
 
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
@@ -468,7 +451,10 @@ fn test_xor_with_tanh_high_accuracy() {
                     .compute_errors(&mut state)
                     .expect("Error computation failed");
 
-                let output = { let last = state.x.len() - 1; state.x[last][0] };
+                let output = {
+                    let last = state.x.len() - 1;
+                    state.x[last][0]
+                };
                 let prediction: f32 = if output > 0.0 { 0.9 } else { -0.9 };
                 let target_val = target[0];
 
@@ -477,7 +463,11 @@ fn test_xor_with_tanh_high_accuracy() {
                 }
             }
             let acc = correct as f32 / training_data.len() as f32;
-            println!("Epoch {}: XOR accuracy with tanh = {:.2}%", epoch, acc * 100.0);
+            println!(
+                "Epoch {}: XOR accuracy with tanh = {:.2}%",
+                epoch,
+                acc * 100.0
+            );
         }
     }
 
@@ -499,7 +489,10 @@ fn test_xor_with_tanh_high_accuracy() {
             .compute_errors(&mut state)
             .expect("Error computation failed");
 
-        let output = { let last = state.x.len() - 1; state.x[last][0] };
+        let output = {
+            let last = state.x.len() - 1;
+            state.x[last][0]
+        };
         let prediction: f32 = if output > 0.0 { 0.9 } else { -0.9 };
         let target_val = target[0];
 
@@ -523,11 +516,8 @@ fn test_xor_with_tanh_high_accuracy() {
 #[test]
 fn test_xor_convergence_metrics() {
     let dims = vec![2, 4, 1];
-    let network = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let network = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let training_data = vec![
         (ndarray::arr1(&[0.0, 0.0]), ndarray::arr1(&[-0.9])),
@@ -540,7 +530,10 @@ fn test_xor_convergence_metrics() {
     for (input, target) in &training_data {
         let mut state = network.init_state();
         state.x[0] = input.clone();
-        { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+        {
+            let last = state.x.len() - 1;
+            state.x[last] = target.clone();
+        }
 
         let steps_taken = network
             .relax_with_convergence(&mut state, 1e-2, 1000, 0.1)
@@ -550,10 +543,7 @@ fn test_xor_convergence_metrics() {
 
         println!(
             "Input {:?}, Target: {} -> Converged in {} steps, final energy: {:.6}",
-            input,
-            target[0],
-            steps_taken,
-            final_energy
+            input, target[0], steps_taken, final_energy
         );
 
         // Should converge within max_steps
@@ -580,11 +570,8 @@ fn test_tanh_outperforms_identity_on_xor() {
     let dims = vec![2, 4, 1];
 
     // Test with tanh
-    let mut network_tanh = PCN::with_activation(
-        dims.clone(),
-        Box::new(TanhActivation),
-    )
-    .expect("Failed to create network");
+    let mut network_tanh = PCN::with_activation(dims.clone(), Box::new(TanhActivation))
+        .expect("Failed to create network");
 
     let config = Config {
         relax_steps: 40,
@@ -614,7 +601,10 @@ fn test_tanh_outperforms_identity_on_xor() {
                     .relax_step(&mut state, config.alpha)
                     .expect("Relaxation failed");
                 if config.clamp_output {
-                    { let last = state.x.len() - 1; state.x[last] = target.clone(); }
+                    {
+                        let last = state.x.len() - 1;
+                        state.x[last] = target.clone();
+                    }
                 }
             }
 
@@ -645,7 +635,10 @@ fn test_tanh_outperforms_identity_on_xor() {
             .compute_errors(&mut state)
             .expect("Error computation failed");
 
-        let output = { let last = state.x.len() - 1; state.x[last][0] };
+        let output = {
+            let last = state.x.len() - 1;
+            state.x[last][0]
+        };
         let prediction: f32 = if output > 0.0 { 0.9 } else { -0.9 };
         if (prediction > 0.0) == (target[0] > 0.0) {
             tanh_correct += 1;

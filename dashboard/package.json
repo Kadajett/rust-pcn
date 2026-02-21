@@ -1,0 +1,17 @@
+{
+  "name": "pcn-dashboard",
+  "version": "1.0.0",
+  "description": "Real-time blECSd terminal dashboard for PCN training",
+  "type": "module",
+  "scripts": {
+    "start": "node --no-warnings dist/index.js",
+    "build": "tsc",
+    "dev": "tsc && node --no-warnings dist/index.js"
+  },
+  "dependencies": {
+    "blecsd": "^0.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

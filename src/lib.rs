@@ -25,6 +25,7 @@
 //!   [`training::train_epoch_parallel`]): parallelize batch relaxation across CPU cores
 //! - **Criterion benchmarks**: statistical benchmarking of sequential vs parallel paths
 
+pub mod checkpoint;
 pub mod core;
 pub mod data;
 pub mod pool;
@@ -36,6 +37,11 @@ pub use pool::{BufferPool, PoolStats};
 pub use training::{
     train_batch, train_batch_parallel, train_epoch, train_epoch_parallel, train_sample,
     EpochMetrics, Metrics,
+};
+
+pub use data::{
+    clean_text, load_book, normalize, strip_gutenberg_markers, text_to_samples, train_eval_split,
+    SampleConfig, Vocabulary,
 };
 
 /// Training configuration.

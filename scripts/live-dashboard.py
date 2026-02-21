@@ -49,13 +49,21 @@ def draw(term_w, term_h):
     b_energy = [e["avg_energy"] for e in baseline]
     s_energy = [e["avg_energy"] for e in seal]
 
-    b_acc = [e["accuracy"] * 100 for e in baseline]
-    s_acc = [e["accuracy"] * 100 for e in seal]
+    # Accuracy and layer errors only exist on eval epochs (--eval-every)
+    b_eval = [e for e in baseline if "accuracy" in e]
+    s_eval = [e for e in seal if "accuracy" in e]
+    bx_eval = make_x(b_eval)
+    sx_eval = make_x(s_eval)
 
-    b_err0 = [e["layer_errors"][0] for e in baseline]
-    s_err0 = [e["layer_errors"][0] for e in seal]
-    b_err1 = [e["layer_errors"][1] for e in baseline]
-    s_err1 = [e["layer_errors"][1] for e in seal]
+    b_acc = [e["accuracy"] * 100 for e in b_eval]
+    s_acc = [e["accuracy"] * 100 for e in s_eval]
+
+    b_err0 = [e["layer_errors"][0] for e in b_eval if e.get("layer_errors")]
+    s_err0 = [e["layer_errors"][0] for e in s_eval if e.get("layer_errors")]
+    b_err1 = [e["layer_errors"][1] for e in b_eval if e.get("layer_errors")]
+    s_err1 = [e["layer_errors"][1] for e in s_eval if e.get("layer_errors")]
+    bx_err = make_x([e for e in b_eval if e.get("layer_errors")])
+    sx_err = make_x([e for e in s_eval if e.get("layer_errors")])
 
     # SEAL-specific
     s_mod0 = [e.get("seal", {}).get("modulation", [1, 1, 1])[0] for e in seal]
@@ -86,23 +94,23 @@ def draw(term_w, term_h):
 
     # ── Row 1, Col 2: Accuracy ──
     plt.subplot(1, 2)
-    if bx:
-        plt.plot(bx, b_acc, label="baseline", color="blue")
-    if sx:
-        plt.plot(sx, s_acc, label="SEAL", color="red")
+    if bx_eval:
+        plt.plot(bx_eval, b_acc, label="baseline", color="blue")
+    if sx_eval:
+        plt.plot(sx_eval, s_acc, label="SEAL", color="red")
     plt.title("Accuracy (%)")
     plt.xlabel("epoch")
 
     # ── Row 1, Col 3: Layer Errors ──
     plt.subplot(1, 3)
-    if bx:
-        plt.plot(bx, b_err0, label="base L0", color="blue")
-    if sx:
-        plt.plot(sx, s_err0, label="SEAL L0", color="red")
-    if bx:
-        plt.plot(bx, b_err1, label="base L1", color="cyan")
-    if sx:
-        plt.plot(sx, s_err1, label="SEAL L1", color="magenta")
+    if bx_err:
+        plt.plot(bx_err, b_err0, label="base L0", color="blue")
+    if sx_err:
+        plt.plot(sx_err, s_err0, label="SEAL L0", color="red")
+    if bx_err:
+        plt.plot(bx_err, b_err1, label="base L1", color="cyan")
+    if sx_err:
+        plt.plot(sx_err, s_err1, label="SEAL L1", color="magenta")
     plt.title("Layer Errors")
     plt.xlabel("epoch")
 

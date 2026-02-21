@@ -8,7 +8,10 @@ use ndarray::{Array1, Array2, Axis};
 use pcn::checkpoint::save_checkpoint;
 use pcn::data::samples::{load_book, train_eval_split, SampleConfig};
 use pcn::data::vocab::Vocabulary;
-use pcn::{BufferPool, Config, TanhActivation, PCN};
+use pcn::gpu::{self, GpuPcn};
+use pcn::training::SurpriseState;
+use pcn::{BufferPool, Config, NeuromodulatedConfig, TanhActivation, PCN};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -80,6 +83,30 @@ struct Args {
     /// Max training samples per book (0 = unlimited)
     #[arg(long, default_value_t = 0)]
     max_samples_per_book: usize,
+
+    /// Use GPU acceleration (wgpu backend)
+    #[arg(long, default_value_t = false)]
+    gpu: bool,
+
+    /// Use neuromodulatory surprise-gated learning
+    #[arg(long, default_value_t = false)]
+    neuromod: bool,
+
+    /// Neuromod: EMA decay rate for expected error tracking (default: 0.1)
+    #[arg(long, default_value_t = 0.1)]
+    neuromod_ema_decay: f32,
+
+    /// Neuromod: Sensitivity of modulation to surprise (default: 5.0)
+    #[arg(long, default_value_t = 5.0)]
+    neuromod_sensitivity: f32,
+
+    /// Neuromod: Minimum learning rate modulation factor (default: 0.3)
+    #[arg(long, default_value_t = 0.3)]
+    neuromod_min_mod: f32,
+
+    /// Neuromod: Maximum learning rate modulation factor (default: 3.0)
+    #[arg(long, default_value_t = 3.0)]
+    neuromod_max_mod: f32,
 }
 
 /// Per-book data: separate train and eval sets.
@@ -156,7 +183,43 @@ fn main() {
     eprintln!("  Alpha: {}, Eta: {}", args.alpha, args.eta);
     eprintln!("  Books dir: {}", args.books_dir.display());
     eprintln!("  Metrics: {}", args.metrics_file.display());
+    if args.gpu {
+        eprintln!("  Backend: GPU (wgpu)");
+    } else {
+        eprintln!("  Backend: CPU (Rayon)");
+    }
+    if args.neuromod {
+        eprintln!(
+            "  Neuromod: ON (ema_decay={}, sensitivity={}, mod=[{}, {}])",
+            args.neuromod_ema_decay,
+            args.neuromod_sensitivity,
+            args.neuromod_min_mod,
+            args.neuromod_max_mod
+        );
+    }
     eprintln!();
+
+    // Initialize GPU device and transfer weights if using GPU
+    let device = if args.gpu {
+        Some(gpu::init_device())
+    } else {
+        None
+    };
+    let mut gpu_pcn: Option<GpuPcn<burn::backend::wgpu::Wgpu>> = if let Some(ref dev) = device {
+        Some(GpuPcn::from_cpu(&pcn, dev))
+    } else {
+        None
+    };
+
+    // Neuromodulatory surprise state (persists across epochs)
+    let neuro_config = NeuromodulatedConfig {
+        ema_decay: args.neuromod_ema_decay,
+        sensitivity: args.neuromod_sensitivity,
+        min_modulation: args.neuromod_min_mod,
+        max_modulation: args.neuromod_max_mod,
+        epsilon: 1e-6,
+    };
+    let mut surprise_state = SurpriseState::new(pcn.dims().len());
 
     for epoch in (start_epoch + 1)..=(start_epoch + args.epochs) {
         let epoch_start = Instant::now();
@@ -188,21 +251,48 @@ fn main() {
         let (all_train_inputs, all_train_targets) = combine_book_data(&books, true);
         let total_train_samples = all_train_inputs.nrows();
 
-        // Train one epoch
-        let epoch_metrics = pcn::train_epoch_parallel(
-            &mut pcn,
-            &all_train_inputs,
-            &all_train_targets,
-            args.batch_size,
-            &config,
-            &pool,
-            true, // shuffle
-        );
+        // Train one epoch (GPU, neuromod, or standard CPU path)
+        let epoch_metrics = if let Some(ref mut gpu) = gpu_pcn {
+            gpu::train_epoch_gpu(
+                gpu,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+            )
+        } else if args.neuromod {
+            pcn::train_epoch_neuromodulated(
+                &mut pcn,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+                &pool,
+                &mut surprise_state,
+                &neuro_config,
+                true, // shuffle
+            )
+        } else {
+            pcn::train_epoch_parallel(
+                &mut pcn,
+                &all_train_inputs,
+                &all_train_targets,
+                args.batch_size,
+                &config,
+                &pool,
+                true, // shuffle
+            )
+        };
 
         let elapsed = epoch_start.elapsed().as_secs_f32();
 
         match epoch_metrics {
             Ok(metrics) => {
+                // Sync GPU weights back to CPU for eval and checkpointing
+                if let Some(ref gpu) = gpu_pcn {
+                    gpu.to_cpu(&mut pcn);
+                }
+
                 // Compute overall accuracy on eval sets
                 let overall_accuracy = compute_eval_accuracy(&pcn, &books, &config);
 
@@ -210,17 +300,40 @@ fn main() {
                 let layer_errors =
                     compute_layer_errors(&pcn, &all_train_inputs, &all_train_targets, &config);
 
-                eprintln!(
-                    "Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s",
-                    epoch,
-                    metrics.avg_loss,
-                    overall_accuracy * 100.0,
-                    total_train_samples,
-                    elapsed
-                );
+                if args.neuromod {
+                    let surprise_str: Vec<String> = surprise_state
+                        .last_surprise
+                        .iter()
+                        .map(|s| format!("{:.2}", s))
+                        .collect();
+                    let mod_str: Vec<String> = surprise_state
+                        .last_modulation
+                        .iter()
+                        .map(|m| format!("{:.2}", m))
+                        .collect();
+                    eprintln!(
+                        "Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s | surprise: [{}] | mod: [{}]",
+                        epoch,
+                        metrics.avg_loss,
+                        overall_accuracy * 100.0,
+                        total_train_samples,
+                        elapsed,
+                        surprise_str.join(", "),
+                        mod_str.join(", "),
+                    );
+                } else {
+                    eprintln!(
+                        "Epoch {:3} | energy: {:.4} | accuracy: {:.2}% | samples: {} | {:.1}s",
+                        epoch,
+                        metrics.avg_loss,
+                        overall_accuracy * 100.0,
+                        total_train_samples,
+                        elapsed
+                    );
+                }
 
                 // Write epoch metrics
-                let epoch_event = serde_json::json!({
+                let mut epoch_event = serde_json::json!({
                     "type": "epoch",
                     "epoch": epoch,
                     "avg_energy": metrics.avg_loss,
@@ -230,6 +343,13 @@ fn main() {
                     "num_samples": total_train_samples,
                     "num_books": books.len(),
                 });
+                if args.neuromod {
+                    epoch_event["neuromod"] = serde_json::json!({
+                        "surprise": surprise_state.last_surprise,
+                        "modulation": surprise_state.last_modulation,
+                        "expected_error": surprise_state.expected_error,
+                    });
+                }
                 writeln!(metrics_file, "{}", epoch_event).expect("Failed to write metrics");
 
                 // Per-book evaluation
@@ -291,7 +411,7 @@ fn main() {
     );
 }
 
-/// Scan the books directory for new .txt files and load them.
+/// Scan the books directory for new .txt files and load them in parallel.
 fn scan_for_new_books(
     books_dir: &Path,
     vocab: &Vocabulary,
@@ -308,25 +428,37 @@ fn scan_for_new_books(
         Err(_) => return,
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().map_or(true, |ext| ext != "txt") {
-            continue;
-        }
+    // Collect new (not yet loaded) book paths
+    let new_paths: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.extension().map_or(true, |ext| ext != "txt") {
+                return None;
+            }
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            if loaded_books.contains_key(&name) {
+                return None;
+            }
+            Some(path)
+        })
+        .collect();
 
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
-            .to_string();
+    if new_paths.is_empty() {
+        return;
+    }
 
-        if loaded_books.contains_key(&name) {
-            continue;
-        }
+    eprintln!("  Loading {} new books in parallel...", new_paths.len());
 
-        match load_book(&path, vocab, sample_config) {
+    // Load all new books in parallel with Rayon
+    let loaded: Vec<_> = new_paths
+        .par_iter()
+        .filter_map(|path| match load_book(path, vocab, sample_config) {
             Ok((book_name, mut inputs, mut targets)) => {
-                // Optionally limit samples per book
                 if max_samples > 0 && inputs.nrows() > max_samples {
                     inputs = inputs
                         .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..max_samples))
@@ -335,44 +467,54 @@ fn scan_for_new_books(
                         .slice_axis(ndarray::Axis(0), ndarray::Slice::from(..max_samples))
                         .to_owned();
                 }
-
                 let total_samples = inputs.nrows();
                 let (train_in, train_tgt, eval_in, eval_tgt) =
                     train_eval_split(&inputs, &targets, eval_fraction);
-
-                eprintln!(
-                    "  Loaded book: {} ({} samples, {} train, {} eval)",
+                Some((
                     book_name,
+                    train_in,
+                    train_tgt,
+                    eval_in,
+                    eval_tgt,
                     total_samples,
-                    train_in.nrows(),
-                    eval_in.nrows()
-                );
-
-                let new_book_event = serde_json::json!({
-                    "type": "new_book",
-                    "epoch": epoch,
-                    "book": book_name,
-                    "samples": total_samples,
-                    "train_samples": train_in.nrows(),
-                    "eval_samples": eval_in.nrows(),
-                });
-                writeln!(metrics_file, "{}", new_book_event)
-                    .expect("Failed to write new_book event");
-
-                let idx = books.len();
-                books.push(BookData {
-                    name: book_name.clone(),
-                    train_inputs: train_in,
-                    train_targets: train_tgt,
-                    eval_inputs: eval_in,
-                    eval_targets: eval_tgt,
-                });
-                loaded_books.insert(book_name, idx);
+                ))
             }
             Err(e) => {
                 eprintln!("  Warning: failed to load {}: {e}", path.display());
+                None
             }
-        }
+        })
+        .collect();
+
+    // Merge results sequentially (metrics file writes, hashmap updates)
+    for (book_name, train_in, train_tgt, eval_in, eval_tgt, total_samples) in loaded {
+        eprintln!(
+            "  Loaded book: {} ({} samples, {} train, {} eval)",
+            book_name,
+            total_samples,
+            train_in.nrows(),
+            eval_in.nrows()
+        );
+
+        let new_book_event = serde_json::json!({
+            "type": "new_book",
+            "epoch": epoch,
+            "book": book_name,
+            "samples": total_samples,
+            "train_samples": train_in.nrows(),
+            "eval_samples": eval_in.nrows(),
+        });
+        writeln!(metrics_file, "{}", new_book_event).expect("Failed to write new_book event");
+
+        let idx = books.len();
+        books.push(BookData {
+            name: book_name.clone(),
+            train_inputs: train_in,
+            train_targets: train_tgt,
+            eval_inputs: eval_in,
+            eval_targets: eval_tgt,
+        });
+        loaded_books.insert(book_name, idx);
     }
 }
 

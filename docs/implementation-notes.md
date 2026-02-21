@@ -1,254 +1,134 @@
-# PCN Implementation Notes
+# Implementation Notes
 
-From user's source material analysis. These are the practical design choices we'll use to build the Rust version.
+Rust-specific design decisions for this PCN implementation. For the algorithm derivation and theory, see [ARCHITECTURE.md](../ARCHITECTURE.md).
 
-## Core Algorithm Summary
+## Update Rules (Phase 1, Linear)
 
-### Energy Function
+With identity activation `f(x) = x` and `f'(x) = 1`, the core update rules simplify to:
+
+**Error computation** (for each layer l from 1 to L):
 ```
-E = (1/2) * Σ_ℓ ||ε^ℓ-1||²
-
-where ε^ℓ-1 = x^ℓ-1 - (W^ℓ f(x^ℓ) + b^ℓ-1)
-```
-
-Lower energy = better predictions up and down the network.
-
-### Two Populations Per Layer
-- **State neurons** `x^ℓ`: the actual layer activity
-- **Error neurons** `ε^ℓ`: difference between actual and predicted
-
-### State Dynamics (Local Gradient Descent)
-For each internal layer ℓ ∈ [1, L-1]:
-```
-dx^ℓ/dt = -ε^ℓ + (W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ)
+eps[l-1] = x[l-1] - (W[l] * x[l] + b[l-1])
 ```
 
-In discrete form (step size α):
+**State relaxation** (for internal layers l from 1 to L-1):
 ```
-x^ℓ += α * (-ε^ℓ + (W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ))
-```
-
-**Interpretation:**
-- `−ε^ℓ`: neuron aligns with top-down prediction
-- `(W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ)`: neuron adjusts to better predict the layer below
-- Result: neuron finds compromise between predicting up and predicting down
-
-### Weight Updates (Hebbian Rule)
-After settling to equilibrium:
-```
-ΔW^ℓ ∝ ε^ℓ-1 ⊗ f(x^ℓ)    (outer product)
-Δb^ℓ-1 ∝ ε^ℓ-1
+x[l] += alpha * (-eps[l] + W[l]^T * eps[l-1])
 ```
 
-With learning rate η.
-
-### Clamping Strategy
-- **Always clamp input layer:** `x^0 = input_batch`
-- **For supervised training:** clamp output layer `x^L = target_label`
-- **For inference:** clamp only input; let output settle freely
-
-## Core Update Rules (for Rust implementation)
-
-### 1) Error Computation (Local Comparator)
-For each layer ℓ ∈ [1..L]:
+**Weight update** (after relaxation settles):
 ```
-ε^ℓ-1 ← x^ℓ-1 - (W^ℓ f(x^ℓ) + b^ℓ-1)
+W[l] += eta * outer(eps[l-1], x[l])
+b[l-1] += eta * eps[l-1]
 ```
 
-### 2) State Dynamics (Relaxation)
-For internal layers ℓ ∈ [1..L-1]:
-```
-x^ℓ += α * (-ε^ℓ + (W^ℓ)^T ε^ℓ-1 ⊙ f'(x^ℓ))
-```
+## Update Rules (Phase 2, Tanh)
 
-Important: The `f'(x^ℓ)` factor shows up when your prediction uses `f(x^ℓ)`.
+With `f(x) = tanh(x)` and `f'(x) = 1 - tanh^2(x)`:
 
-**Special case (Phase 1 - Linear, f(x)=x):**
+**Error computation:**
 ```
-f'(x) = 1, so:
-x^ℓ += α * (-ε^ℓ + (W^ℓ+1)^T ε^ℓ-1)
+eps[l-1] = x[l-1] - (W[l] * tanh(x[l]) + b[l-1])
 ```
 
-**Nonlinear (Phase 2 - Tanh, f(x)=tanh(x)):**
+**State relaxation:**
 ```
-f'(x) = 1 - tanh²(x)
-```
-
-### 3) Weight Updates (Local Learning Rule)
-For each synapse matrix `W^ℓ` predicting layer ℓ−1 from ℓ:
-```
-ΔW^ℓ ∝ ε^ℓ-1 (f(x^ℓ))^T   (outer product)
-Δb^ℓ-1 ∝ ε^ℓ-1
+x[l] += alpha * (-eps[l] + W[l]^T * eps[l-1] * (1 - tanh^2(x[l])))
 ```
 
-In practice: `W[l] += eta * outer(eps[l-1], f(x[l]))`
-
-## Training Loop (Pseudo-code)
-
+**Weight update:**
 ```
-for each minibatch:
-    # 1. Initialize states
-    x[l] ← zeros or small random
-    
-    # 2. Clamp input and (if supervised) target
-    x[0] ← input_batch
-    if supervised:
-        x[L] ← target_label
-    
-    # 3. Relax for T steps
-    for t in 1..T:
-        compute all μ[l] = W[l] f(x[l]) + b[l-1]
-        compute all ε[l] = x[l] - μ[l]
-        update internal x[l] (l ∈ [1, L-1])
-    
-    # 4. After settling
-    compute final ε[l]
-    update W[l], b[l-1] using Hebbian rule
+W[l] += eta * outer(eps[l-1], tanh(x[l]))
 ```
 
-## Activation Functions
+## Training Loop Pseudocode
 
-### Phase 1: Linear (f(x) = x)
 ```
-f(x) = x
-f'(x) = 1
+for each sample (input, target):
+    1. Initialize states:  x[l] = zeros  for all l
+    2. Clamp input:        x[0] = input
+    3. Clamp output:       x[L] = target  (supervised only)
+    4. Relax for T steps:
+         compute predictions mu[l] = W[l+1] * f(x[l+1]) + b[l]
+         compute errors      eps[l] = x[l] - mu[l]
+         update states       x[l] += alpha * (...)  for internal layers
+    5. Compute final errors after settling
+    6. Update weights using Hebbian rule
+    7. Record energy for tracking
 ```
-- Makes energy quadratic, analytically tractable
-- Useful for algorithm verification
 
-### Phase 2: Tanh (f(x) = tanh(x))
+## Activation Function Design
+
+Activations are implemented via a trait, not a match statement per layer:
+
+```rust
+pub trait Activation: Send + Sync {
+    fn apply(&self, x: &Array1<f32>) -> Array1<f32>;
+    fn apply_matrix(&self, x: &Array2<f32>) -> Array2<f32>;
+    fn derivative(&self, x: &Array1<f32>) -> Array1<f32>;
+    fn derivative_matrix(&self, x: &Array2<f32>) -> Array2<f32>;
+    fn name(&self) -> &'static str;
+}
 ```
-f(x) = tanh(x)
-f'(x) = 1 - tanh²(x)
+
+`Send + Sync` bounds prepare for Rayon parallelism. Matrix variants support batch operations. Adding a new activation (e.g., LeakyReLU) requires implementing this trait and nothing else.
+
+## Weight Initialization
+
+Weights are drawn from `U(-0.05, 0.05)` (uniform random). This keeps initial predictions small and prevents the energy from starting at extreme values.
+
+Considerations for future phases:
+- Deeper networks benefit from smaller initialization (scale by `1/sqrt(fan_in)`).
+- ReLU-family activations work better with He initialization.
+- Any change should be documented in the code and verified with convergence tests.
+
+Biases start at zero. States start at zero.
+
+## Convergence-Based Stopping
+
+Phase 2 added `relax_with_convergence()`, which stops relaxation early when the energy change between steps falls below a threshold. This avoids wasting compute on samples that settle quickly.
+
+The method returns the number of steps actually taken, which is useful for profiling convergence behavior across different inputs and architectures.
+
+## Batch Training (Phase 3)
+
+`BatchState` replaces `State` for batch operations. Each field holds `Array2<f32>` with shape `(batch_size, layer_dim)` instead of `Array1<f32>`.
+
+Weight updates are averaged across the batch:
 ```
-- Smooth, bounded in [-1, 1]
-- Good gradient flow
-- Prevents saturation
-
-### Later: Leaky ReLU (f(x) = max(0, αx, x))
+delta_W[l] = (eta / batch_size) * eps[l-1]^T @ f(x[l])
 ```
-f(x) = max(αx, x)  where 0 < α < 1
-f'(x) = α (x < 0), 1 (x ≥ 0)
-```
-- Fast, biologically plausible for excitatory neurons
-- Requires small α (e.g., 0.01) to prevent dead neurons
 
-## Design Decisions
+Without this scaling, larger batches would effectively shrink the learning rate.
 
-### Weight Matrices: Symmetric vs Separate
+The `BatchIterator` provides epoch-level shuffling over a dataset, yielding mini-batches of configurable size.
 
-**Option A (Symmetric - Initial Choice):**
-- Single `W[l]` used both directions
-- Forward: `μ^ℓ-1 = W^ℓ f(x^ℓ)`
-- Feedback: error backpropagation uses `(W^ℓ)^T`
-- **Pros:** Simpler, fewer parameters, stable
-- **Cons:** Requires reverse communication (not bio-literal)
+## Design Decisions Summary
 
-**Option B (Separate - Later if Needed):**
-- Two matrices: `W_down[l]` and `W_up[l]`
-- Both update locally; may converge to approximate symmetry
-- **Pros:** More biologically plausible
-- **Cons:** Harder to tune; more memory
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Weight structure | Symmetric (single W per layer) | Simpler, fewer params, switch to separate in Phase 4 if needed |
+| Stopping criterion | Fixed T (Phase 1), energy-based (Phase 2+) | Start simple, add adaptivity when accuracy plateaus |
+| Initialization | U(-0.05, 0.05) weights, zero biases | Small random values, empirically stable |
+| Batch dimension | First axis: (batch_size, neuron_dim) | Aligns with ndarray row-major, enables `inputs @ weights.t()` |
+| Error type | `PCNResult<T>` with ShapeMismatch/InvalidConfig | Covers the two failure modes in core operations |
+| Activation dispatch | Trait object `Box<dyn Activation>` | Extensible, no match arms, Rayon-compatible |
 
-→ **Start with Option A. Switch to B in Phase 4 if needed.**
+## Known Performance Issues
 
-### Convergence Criterion
+The [Audit Report](../AUDIT-REPORT.md) identified these bottlenecks:
 
-**Option 1 (Fixed T - Initial Choice):**
-- Fixed number of relaxation steps (20-50)
-- Simple, predictable compute
-- May over- or under-relax
+1. **Per-step allocations in `relax_step`.** Each relaxation step allocates ~5 temporary arrays per layer. For 50 steps, 4 layers, and 1000 samples, that is 1M heap allocations per epoch. Fix: pre-allocate a `Workspace` struct with scratch buffers.
 
-**Option 2 (Energy-Based - Later):**
-- Stop when E decreases by < threshold
-- Adaptive; faster on easy inputs
-- Must avoid premature termination
+2. **Identity activation clones.** `IdentityActivation::apply` returns `x.clone()` because the trait requires an owned return value. Fix: consider `Cow<Array1<f32>>` or an in-place API.
 
-→ **Start with fixed T. Move to energy-based in Phase 2 when accuracy plateaus.**
+3. **Unnecessary clone in `compute_errors`.** The prediction vector is cloned before computing the error. Reordering the operations eliminates the clone.
 
-### Initialization
-
-**Weights:** `U(-0.05, 0.05)` (uniform random in [-0.05, 0.05])
-- Small random values prevent symmetry breaking
-- Adjust if divergence occurs
-
-**States:** Zeros or cached previous states (for speed)
-**Biases:** Zeros
-
-## Parallelism & Locality
-
-Key advantages:
-- **No layer synchronization needed** — states can update in any order; still converges to same equilibrium
-- **Each neuron uses only local information:**
-  - Current state `x[l]`
-  - Errors from own layer `ε[l]`
-  - Errors from layer below `ε[l-1]`
-  - Adjacent weights `W[l], W[l+1]`
-
-→ **Natural fit for data parallelism (batch) and model parallelism (pipeline).**
-
-## Comparison to Backpropagation
-
-| Property | Backprop | PCN |
-|----------|----------|-----|
-| Phases | Separate forward/backward | Unified, continuous |
-| Coordination | Global | Local |
-| Learning signal | Global loss gradient | Local prediction errors |
-| Parallelism | Limited | Massively parallel |
-| Biological plausibility | Low | High |
-| Compute cost (ops) | ~2 forward passes | ~T forward passes (T = 20-100) |
-| Typical accuracy/speed trade-off | Fast, often better accuracy | Slower but parallelizable |
-
-**Trade-off:** PCNs pay in relaxation steps but gain in parallelism and biological fidelity.
-
-## Implementation Checklist
-
-### Phase 1: Linear PCN
-- [ ] Core PCN struct with symmetric weights
-- [ ] Energy computation
-- [ ] State relaxation (gradient descent on energy)
-- [ ] Hebbian weight updates
-- [ ] Training loop with fixed relaxation steps
-- [ ] Unit tests for math correctness
-- [ ] XOR validation (energy decreases, >95% accuracy)
-
-### Phase 2: Nonlinear PCN
-- [ ] Add tanh activation (smooth derivatives)
-- [ ] Implement leaky ReLU variant
-- [ ] Convergence-based stopping (instead of fixed T)
-- [ ] Integration tests on toy problems (spirals, etc.)
-- [ ] MNIST benchmark
-
-### Phase 3: Batching & Performance
-- [ ] Mini-batch training
-- [ ] Typed array buffers and reuse
-- [ ] Rayon-based data parallelism
-- [ ] Benchmarks (criterion)
-
-### Phase 4: Advanced Features
-- [ ] Separate feedback weights (biologically-closer variant)
-- [ ] Precision scalars per layer
-- [ ] Sparsity penalties
-- [ ] Noise injection
-
-### Phase 5: GPU Training (Kubernetes)
-- [ ] GPU kernel support (via wgpu or CUDA bindings)
-- [ ] Kubernetes deployment with resource tracking
-- [ ] Large-scale dataset training on `/bulk-storage`
-
-## Metrics to Track
-
-During training:
-- **Energy:** Total prediction error (should decrease monotonically or plateau)
-- **Accuracy:** Classification rate on validation set
-- **Layer-wise error:** Error magnitude per layer (diagnostic)
-- **Weight norm:** L2 norm of weight matrices (detect divergence)
-- **Relaxation convergence:** How quickly states settle (energy curve)
+These are Phase 4 optimization targets.
 
 ## References
 
-- **Predictive Coding Theory:** Rao & Ballard (1999), "Predictive coding in the visual cortex" (*Nature Neuroscience*)
-- **Modern Derivation:** Millidge et al. (2022), "Predictive coding approximates backprop and aligns with lateral connections in biological neural networks"
-- **Transcript:** Original video "How the Brain Learns Better Than Backpropagation"
-- **CommonJS Reference:** See `commonjs-pcn-reference.js` in this directory
-
+- [ARCHITECTURE.md](../ARCHITECTURE.md) for the full algorithm derivation
+- [Audit Report](../AUDIT-REPORT.md) for the complete codebase assessment
+- Whittington & Bogacz (2017) for the Hebbian learning rule derivation
+- Millidge et al. (2022) for the modern survey of PCN techniques

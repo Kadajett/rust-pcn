@@ -1,228 +1,106 @@
-# /architecture — PCN Project Architecture Skill
+# PCN Project Skill Guide
 
-Use this skill to:
-- **Understand** the Predictive Coding Network design (algorithm, why it works)
-- **Design** new features or layers
-- **Debug** architectural issues
-- **Refactor** while maintaining invariants
-- **Document** design decisions
+Reference for working on this codebase. Use this to orient yourself before making changes.
 
 ## Quick Links
 
-- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Full PCN derivation, math, and design choices
-- **[src/](./src/)** — Source tree (core/, data/, training/, utils/)
-- **[GitHub Issues](https://github.com/your-account/pcn-rust/issues)** — Task tracking
+- [ARCHITECTURE.md](./ARCHITECTURE.md): algorithm derivation, math, design choices
+- [Implementation Notes](./docs/implementation-notes.md): Rust-specific decisions
+- [Audit Report](./AUDIT-REPORT.md): codebase assessment with known issues
+- [src/](./src/): source tree (core/, training/, data/, utils/)
+- [tests/](./tests/): test suite with README
 
-## Core Concepts at a Glance
+## Core Concepts
 
-### Energy Minimization
+**Energy minimization:** `E = (1/2) * sum ||eps[l]||^2`. Lower energy means better predictions. The network minimizes this by adjusting states (relaxation) and weights (learning).
+
+**Two neuron populations per layer:**
+- State neurons `x[l]`: the layer's activity.
+- Error neurons `eps[l]`: mismatch between actual activity and what the layer above predicted.
+
+**State dynamics (relaxation):**
 ```
-E = (1/2) * Σ ||ε^ℓ-1||²
-
-Lower energy = better predictions up and down the network.
+x[l] += alpha * (-eps[l] + W[l]^T * eps[l-1] * f'(x[l]))
 ```
+Two competing forces: align with top-down prediction (`-eps[l]`) and improve bottom-up prediction (`W[l]^T * eps[l-1]`).
 
-### Two Populations Per Layer
-- **State neurons** `x^ℓ`: the actual layer activity
-- **Error neurons** `ε^ℓ`: difference between actual and predicted
-
-### State Dynamics (Relaxation)
-Each neuron adjusts itself to minimize energy:
+**Weight updates (Hebbian rule):**
 ```
-x^ℓ += α * (-ε^ℓ + (W^ℓ+1)^T ε^ℓ-1 ⊙ f'(x^ℓ))
-```
-
-**Two competing forces:**
-1. Align with top-down prediction (−ε^ℓ)
-2. Better predict the layer below ((W^ℓ+1)^T ε^ℓ-1)
-
-### Weight Updates (Local Learning)
-```
-ΔW^ℓ ∝ ε^ℓ-1 ⊗ f(x^ℓ)     (Hebbian rule)
+delta_W[l] = eta * eps[l-1] outer f(x[l])
 ```
 
-Same-sign activity at pre- and post-synaptic neurons strengthens the weight.
+## Implementation Phases
 
-## Design Phases
+| Phase | Activation | Key Milestones |
+|-------|-----------|----------------|
+| 1 (done) | Identity `f(x)=x` | Energy computation, relaxation, Hebbian updates, XOR tests |
+| 2 (done) | Tanh | Convergence-based stopping, spiral classification, >90% XOR accuracy |
+| 3 (done) | Batch operations | BatchState, BatchIterator, train_epoch, mini-batch training |
+| 4 (planned) | Same | Separate feedback weights, Rayon parallelism, precision scalars |
+| 5 (planned) | Same | wgpu/CUDA kernels, Kubernetes training |
 
-| Phase | Goal | Activation | Key Milestones |
-|-------|------|-----------|-----------------|
-| **1** | Linear kernel works | Identity `f(x)=x` | Energy decreases, can learn XOR |
-| **2** | Nonlinear networks | Tanh, ReLU | Validation on MNIST, convergence-based stopping |
-| **3** | Production ready | Batching, optimization | Criterion benchmarks, >80% test coverage |
-| **4** | Advanced | Separate weights, noise | Sparsity, precision scalars |
-| **5** | GPU-scale | CUDA/wgpu | Kubernetes training, real datasets |
+## Adding a Feature
 
-## Making Decisions
+1. Check [ARCHITECTURE.md](./ARCHITECTURE.md) for whether it's already planned as a design choice.
+2. File an issue describing what, why, and tradeoffs.
+3. Design the approach in issue comments before coding.
+4. Reference the issue in your PR.
 
-### Adding a Feature
+## Activation Functions
 
-Before coding:
+Add new activations by implementing the `Activation` trait (see `src/core/mod.rs`). Do not use match statements per layer.
 
-1. **Check ARCHITECTURE.md** — Is it mentioned as a design choice?
-2. **File an issue** — Describe what, why, trade-offs
-3. **Design in the issue** — Comments from agents should converge on approach
-4. **Reference the issue in your PR**
-
-### Activation Functions
-
-- **Linear `f(x)=x`**: For Phase 1 only. Makes energy quadratic; easy analysis.
-- **Tanh `f(x)=tanh(x)`**: Smooth, bounded, good for Phase 2+.
-- **Leaky ReLU `f(x)=αx (x<0), x (x≥0)`**: Fast, biologically plausible, requires tuning.
-
-Add activation via a trait (not a match on each layer).
-
-### Weight Initialization
-
-Current: `U(-0.05, 0.05)` (uniform small random).
-
-**May need adjustment based on depth and activation:**
-- Deeper networks → smaller initialization
-- ReLU → Xavier or He initialization
-
-Document any change in a doc comment.
-
-### Relaxation Steps
-
-Current: Fixed `T` (e.g., 20 steps).
-
-**When to move to energy-based:**
-- When accuracy plateaus with fixed T
-- When you want adaptive compute
-- Measure wall-clock time before and after
-
-Use an issue to track this decision.
+- **Identity** (`f(x)=x`): Phase 1 only. Quadratic energy, easy to verify.
+- **Tanh** (`f(x)=tanh(x)`): Smooth, bounded [-1, 1], good gradient flow.
+- **Leaky ReLU** (`f(x)=max(alpha*x, x)`): Fast, biologically plausible, requires tuning alpha.
 
 ## Testing Strategy
 
-### Unit Tests
+Run all tests: `cargo test --release`
+Run specific suites: `cargo test --test tanh_tests --release`
+See [tests/README.md](./tests/README.md) for the full test catalog.
 
-Test each module in isolation:
-```rust
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_energy_decreases() {
-        // Create small network, verify E goes down during relaxation
-    }
-
-    #[test]
-    fn test_hebbian_update() {
-        // Verify weight update rule math
-    }
-}
-```
-
-### Integration Tests
-
-Test full training loop:
-```rust
-#[test]
-fn test_xor_learning() {
-    // Train PCN on XOR, verify >95% accuracy after convergence
-}
-```
-
-### Benchmarks
-
-Track performance across phases:
-```rust
-// benches/relaxation.rs
-// Measure time per relaxation step as network size scales
-```
+Tests cover:
+- Energy computation correctness and non-negativity
+- State relaxation and energy decrease
+- Hebbian weight update formula verification
+- Tanh activation properties (bounds, symmetry, derivatives)
+- Convergence-based stopping behavior
+- End-to-end training on XOR, spiral, and linear problems
+- Batch training mechanics
 
 ## Code Style
 
-### Guard Clauses
+**Guard clauses:** Early return on invalid input. No nested if/else chains.
 
-```rust
-// ✓ Good: early return
-pub fn validate_dims(dims: &[usize]) -> Result<(), String> {
-    if dims.is_empty() {
-        return Err("dims must not be empty".to_string());
-    }
-    if dims.iter().any(|&d| d == 0) {
-        return Err("all dims must be > 0".to_string());
-    }
-    Ok(())
-}
+**Error handling:** All core methods return `PCNResult<T>`. No `unwrap()` or `panic!()` in library code. Tests use `.expect("message")`.
 
-// ✗ Avoid: nested ifs
-pub fn validate_dims(dims: &[usize]) -> Result<(), String> {
-    if !dims.is_empty() {
-        if dims.iter().all(|&d| d > 0) {
-            Ok(())
-        } else {
-            Err("...")
-        }
-    } else {
-        Err("...")
-    }
-}
-```
-
-### Error Handling
-
-```rust
-// ✓ Good: explicit Result
-pub fn train_sample(&mut self, input: &Array1<f32>, target: &Array1<f32>) -> Result<f32, TrainError> {
-    // ...
-}
-
-// ✗ Avoid: unwrap() or panic!() in library code
-let x = some_risky_op().unwrap();  // only in main() or tests
-```
-
-### Immutability by Default
-
-```rust
-// ✓ Good: take by reference, mutate in place when needed
-pub fn relax_step(&self, state: &mut State, alpha: f32) { ... }
-
-// ✗ Avoid: returning a new copy if mutation is the goal
-pub fn relax_step(&self, state: &State, alpha: f32) -> State { ... }
-```
+**Immutability:** Take `&self` where possible. Use `&mut State` for in-place updates on the state, not `&mut self` on the network (except weight updates).
 
 ## Debugging Checklist
 
-**Network diverges (energy increases):**
-- Check step sizes `alpha` and `eta` — are they too large?
-- Verify clamping logic — are input/output being fixed?
-- Plot layer-wise errors — which layer is misbehaving?
+**Energy increases during relaxation:**
+- Step sizes `alpha` or `eta` are too large.
+- Clamping logic is broken (input/output not fixed).
+- Check layer-wise errors to find which layer diverges.
 
-**Accuracy doesn't improve:**
-- Check data normalization (should be roughly [-1, 1] or [0, 1])
-- Increase relaxation steps T
-- Try different initializations
+**Accuracy does not improve:**
+- Data normalization is wrong (should be roughly [-1, 1] or [0, 1]).
+- Relaxation steps T is too small.
+- Try different weight initialization ranges.
 
-**Out of memory:**
-- Reduce batch size
-- Reduce layer dimensions for debugging
-- Profile with `cargo flamegraph`
+**NaN or Inf in outputs:**
+- Division by zero or overflow in activation function.
+- Learning rate is too large causing weight explosion.
 
-## Refactoring Safely
+## Key Files
 
-1. **Run tests** before touching anything: `cargo test --all`
-2. **Make one change** (rename, extract function, etc.)
-3. **Test again**: `cargo test && cargo clippy && cargo fmt`
-4. **Commit with reference to the refactoring issue**
-
-**Never delete working code.** Stage it in a feature flag or `deprecated` module until confident.
-
-## Communication
-
-When making architectural decisions:
-- **Link to ARCHITECTURE.md** sections for context
-- **Propose alternatives** and trade-offs
-- **Reference published papers** (Millidge et al., Rao & Ballard) for learning rule variants
-- **Include measurements** (energy decrease, accuracy, wall-clock time)
-
-## Resources
-
-- **Energy minimization:** See ARCHITECTURE.md § Energy-Based Formulation
-- **Locality:** ARCHITECTURE.md § Locality & Parallelism
-- **Training loop:** src/training/lib.rs
-- **Tests:** tests/ directory
-
+| File | Purpose |
+|------|---------|
+| `src/core/mod.rs` | PCN struct, State, BatchState, all core algorithms |
+| `src/training/mod.rs` | BatchIterator, TrainingConfig, train_batch, train_epoch |
+| `src/lib.rs` | Public API re-exports |
+| `src/pool.rs` | Thread pool utilities |
+| `tests/energy_tests.rs` | Unit tests for energy and state dynamics |
+| `tests/integration_tests.rs` | End-to-end training tests |
+| `tests/tanh_tests.rs` | Tanh activation and convergence tests |

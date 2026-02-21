@@ -29,6 +29,10 @@ chrono = "0.4"
 name = "pcn-train"
 path = "src/bin/train.rs"
 
+[[bin]]
+name = "pcn-generate"
+path = "src/bin/generate.rs"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 approx = "0.5"

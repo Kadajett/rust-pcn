@@ -11,8 +11,12 @@ import {
   enableKeys,
 } from "blecsd";
 
+import { createDirtyTracker } from "blecsd/core";
+import { createDoubleBuffer, createScreenBuffer } from "blecsd/terminal";
 import {
   setOutputStream,
+  setOutputBuffer,
+  setRenderBuffer,
   enterAlternateScreen,
   leaveAlternateScreen,
   hideCursor,
@@ -34,8 +38,19 @@ import type { TrainingEvent } from "./types.js";
 // Get metrics file path from CLI args
 const metricsPath = process.argv[2] || "data/output/metrics.jsonl";
 
-// Initialize terminal: output stream, alternate screen, hide cursor
+// Terminal dimensions
+const cols = process.stdout.columns || 120;
+const rows = process.stdout.rows || 40;
+
+// Initialize render pipeline buffers
 setOutputStream(process.stdout);
+const doubleBuffer = createDoubleBuffer(cols, rows);
+setOutputBuffer(doubleBuffer);
+const screenBuffer = createScreenBuffer(cols, rows);
+const dirtyTracker = createDirtyTracker(cols, rows);
+setRenderBuffer(dirtyTracker, screenBuffer);
+
+// Initialize terminal
 enterAlternateScreen();
 hideCursor();
 clearScreen();

@@ -5,6 +5,8 @@
 use burn::prelude::*;
 use burn::tensor::activation;
 
+use super::cublas::matmul;
+
 /// Batched network state on GPU.
 pub struct GpuBatchState<B: Backend> {
     /// x[l]: activations at layer l, shape (batch, d_l)
@@ -79,7 +81,7 @@ pub fn compute_byte_prediction_error_gpu<B: Backend>(
     let [rows, _] = w[l_max].dims();
     let batch = hidden.dims()[0];
     let slab = w[l_max].clone().slice([0..rows, head.columns.clone()]);
-    let prediction = hidden.matmul(slab.clone()) + head.bias.clone().unsqueeze::<2>();
+    let prediction = matmul(hidden, slab.clone()) + head.bias.clone().unsqueeze::<2>();
     let eps = state.x[l_max].clone().slice([0..batch, head.columns.clone()]) - prediction;
     state.byte_prediction = Some(BytePredictionError { precision: head.precision, eps });
     slab
@@ -104,7 +106,7 @@ pub fn relax_byte_prediction_gpu<B: Backend>(
     let top_alpha = layer_alphas.get(l_max - 1).copied().unwrap_or(alpha);
     let tanh_hidden = state.tanh_x[l_max - 1].clone();
     let f_prime = tanh_hidden.clone().mul(tanh_hidden).neg().add_scalar(1.0);
-    let feedback = byte.eps.clone().matmul(slab.clone().transpose()).mul(f_prime);
+    let feedback = matmul(byte.eps.clone(), slab.clone().transpose()).mul(f_prime);
     state.x[l_max - 1] =
         state.x[l_max - 1].clone() + feedback.mul_scalar(hidden_alpha * head.precision);
     let [batch, _] = byte.eps.dims();
@@ -133,7 +135,7 @@ pub fn init_state_from_input_gpu<B: Backend>(
 
     for l in 1..num_layers {
         // x[l-1] @ w[l]: (batch, d_{l-1}) @ (d_{l-1}, d_l) = (batch, d_l)
-        let projection = x[l - 1].clone().matmul(w[l].clone());
+        let projection = matmul(x[l - 1].clone(), w[l].clone());
         x.push(activation::tanh(projection));
     }
 
@@ -172,7 +174,7 @@ pub fn compute_errors_gpu<B: Backend>(
 
         // mu[l-1] = f_x_l @ w[l]^T + b[l-1]
         // f_x_l: (batch, d_l), w[l]: (d_{l-1}, d_l), w[l]^T: (d_l, d_{l-1})
-        let mu = f_x_l.matmul(w[l].clone().transpose()) + b[l - 1].clone().unsqueeze::<2>();
+        let mu = matmul(f_x_l, w[l].clone().transpose()) + b[l - 1].clone().unsqueeze::<2>();
 
         state.eps[l - 1] = state.x[l - 1].clone() - mu.clone();
         state.mu[l - 1] = mu;
@@ -212,7 +214,7 @@ fn euler_layers_gpu<B: Backend>(
         let neg_eps = state.eps[l].clone().neg();
 
         // feedback = eps[l-1] @ w[l]: (batch, d_{l-1}) @ (d_{l-1}, d_l) = (batch, d_l)
-        let feedback = state.eps[l - 1].clone().matmul(w[l].clone());
+        let feedback = matmul(state.eps[l - 1].clone(), w[l].clone());
 
         // f_prime = 1 - tanh(x[l])^2, using cached tanh from compute_errors_gpu
         let tanh_x = state.tanh_x[l].clone();
@@ -272,11 +274,10 @@ impl<B: Backend> GpuTopFactorization<B> {
             weights.clone().select(1, start)
         };
         for _ in 0..iterations {
-            direction = scale_by_max_abs(
-                weights
-                    .clone()
-                    .matmul(weights.clone().transpose().matmul(direction)),
-            );
+            direction = scale_by_max_abs(matmul(
+                weights.clone(),
+                matmul(weights.clone().transpose(), direction),
+            ));
         }
         direction = scale_by_max_abs(direction);
         let norm = direction
@@ -287,9 +288,9 @@ impl<B: Backend> GpuTopFactorization<B> {
             .clamp_min(f32::MIN_POSITIVE)
             .reshape([1_usize, 1]);
         let direction = direction.div(norm).reshape([1, rows]);
-        let coefficients = direction.clone().matmul(weights.clone());
+        let coefficients = matmul(direction.clone(), weights.clone());
         let residual =
-            weights.clone() - direction.clone().transpose().matmul(coefficients.clone());
+            weights.clone() - matmul(direction.clone().transpose(), coefficients.clone());
         let residual_norm_sq = residual.clone().mul(residual.clone()).sum_dim(0);
         Self {
             direction,
@@ -387,7 +388,7 @@ fn conditioned_top_step_gpu<B: Backend>(
     let mut common_error = common_target.clone()
         - activity.clone().mul(factor.coefficients.clone()).sum_dim(1);
     let mut residual_error = target
-        - activity.clone().matmul(residual_t.clone())
+        - matmul(activity.clone(), residual_t.clone())
         - common_target.mul(factor.direction.clone());
 
     // Positive-definite proximal diagonal: w = free / (f'²‖R_j‖² + λ).
@@ -407,7 +408,7 @@ fn conditioned_top_step_gpu<B: Backend>(
     let common_step = slope_weight.clone().mul(factor.coefficients.clone());
     let common_activity = slope.clone().mul(common_step.clone());
     let curvature = common_activity.clone().mul(factor.coefficients.clone()).sum_dim(1);
-    let residual_common = common_activity.clone().matmul(residual_t.clone());
+    let residual_common = matmul(common_activity.clone(), residual_t.clone());
     let numerator = common_error.clone().mul(curvature.clone())
         + residual_error.clone().mul(residual_common.clone()).sum_dim(1);
     let denominator = curvature.clone().mul(curvature.clone())
@@ -422,7 +423,7 @@ fn conditioned_top_step_gpu<B: Backend>(
     residual_error = residual_error - residual_common.mul(common_scale);
 
     // Stage 2: Sherman–Morrison proximal Gauss–Newton step, exact line search.
-    let projected = residual_error.clone().matmul(factor.residual.clone());
+    let projected = matmul(residual_error.clone(), factor.residual.clone());
     let common_projected = common_activity.mul(projected.clone()).sum_dim(1);
     let normalizer = curvature.clone().add_scalar(1.0);
     let remaining = (common_error.clone() - common_projected.clone()).div(normalizer.clone());
@@ -430,7 +431,7 @@ fn conditioned_top_step_gpu<B: Backend>(
     let gradient = projected + remaining.mul(factor.coefficients.clone());
     let residual_step = slope_weight.mul(gradient.clone());
     let activity_step = slope.mul(residual_step.clone());
-    let residual_activity = activity_step.clone().matmul(residual_t);
+    let residual_activity = matmul(activity_step.clone(), residual_t);
     let common_change_sq = common_change.clone().mul(common_change.clone());
     let decrease = activity_step.mul(gradient).sum_dim(1) + common_change_sq.clone();
     let line_curvature = common_change_sq
@@ -560,8 +561,8 @@ pub fn update_weights_gpu_contrastive<B: Backend>(
             let partial = update_rows.start != 0 || update_rows.end != rows;
             // Keep the original GEMM geometry: changing its row count changes
             // backend reduction rounding and downstream task predictions.
-            let positive_delta = positive_eps.clone().transpose().matmul(positive.tanh_x[l].clone());
-            let free_delta = free_eps.clone().transpose().matmul(free.tanh_x[l].clone());
+            let positive_delta = matmul(positive_eps.clone().transpose(), positive.tanh_x[l].clone());
+            let free_delta = matmul(free_eps.clone().transpose(), free.tanh_x[l].clone());
             let raw_delta = positive_delta - free_delta;
             let mut delta = raw_delta.clone().mul_scalar(scale);
             if let GpuUpdateScope::Request { inherited_input_rows, base_eta } = scope {
@@ -586,8 +587,8 @@ pub fn update_weights_gpu_contrastive<B: Backend>(
                             None => (positive_byte.eps.clone(), free_byte.eps.clone()),
                         };
                         let head_columns = head.columns.clone();
-                        let byte_delta = positive.tanh_x[l - 1].clone().transpose().matmul(positive_eps.clone())
-                            - free.tanh_x[l - 1].clone().transpose().matmul(free_eps.clone());
+                        let byte_delta = matmul(positive.tanh_x[l - 1].clone().transpose(), positive_eps.clone())
+                            - matmul(free.tanh_x[l - 1].clone().transpose(), free_eps.clone());
                         let block = delta.clone().slice([0..rows, head_columns.clone()])
                             + byte_delta.mul_scalar(scale * head.precision);
                         delta = delta.slice_assign([0..rows, head_columns.clone()], block);
@@ -762,10 +763,7 @@ pub fn block_spectrum<B: Backend>(
     assert!(block.start < block.end && block.end <= columns, "block within the matrix");
     let k = block.end - block.start;
     let slab = w.clone().slice([0..rows, block]);
-    let gram: Vec<f64> = slab
-        .clone()
-        .transpose()
-        .matmul(slab)
+    let gram: Vec<f64> = matmul(slab.clone().transpose(), slab)
         .into_data()
         .to_vec::<f32>()
         .expect("gram readback")

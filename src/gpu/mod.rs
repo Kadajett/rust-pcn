@@ -2,6 +2,7 @@
 //! It intentionally does not use autograd.
 
 pub mod convert;
+pub mod cublas;
 pub mod tensors;
 
 use std::{thread, time::Duration};
@@ -29,6 +30,7 @@ use tensors::{
     GpuTopFactorization, GpuUpdateScope,
 };
 
+pub use cublas::{matmul, matmul_path, matmul_with, MatmulPath};
 pub use tensors::{block_spectrum, compute_batch_energy_gpu, BlockSpectrum};
 
 #[cfg(feature = "cuda")]

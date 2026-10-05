@@ -5,7 +5,8 @@ edition = "2021"
 description = "River predictive-coding base for the Song v0.1 multimodal model"
 
 [lints.rust]
-unsafe_code = "forbid"
+# `deny`, not `forbid`: `src/gpu/cublas.rs` opts in for the cuBLAS FFI calls only.
+unsafe_code = "deny"
 
 [lints.clippy]
 pedantic = "warn"
@@ -25,10 +26,20 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rusqlite = "0.32"
 thiserror = "1.0"
+# cuBLAS fast path (`src/gpu/cublas.rs`): device-pointer access to burn-cuda tensors and
+# the cuBLAS FFI. Versions match burn 0.16.1's own dependency graph (Cargo.lock).
+burn-jit = { version = "0.16.1", default-features = false, features = ["fusion", "std"], optional = true }
+burn-fusion = { version = "0.16.1", default-features = false, optional = true }
+cubecl = { version = "0.4.0", default-features = false, features = ["cuda"], optional = true }
+cudarc = { version = "0.12.1", default-features = false, features = ["std", "driver", "cublas", "cuda-12050"], optional = true }
 
 [features]
 default = ["cuda"]
-cuda = ["burn/cuda-jit"]
+cuda = ["burn/cuda-jit", "dep:burn-jit", "dep:burn-fusion", "dep:cubecl", "dep:cudarc"]
+
+[[example]]
+name = "cublas_matmul_check"
+required-features = ["cuda"]
 
 [[bin]]
 name = "jev-pcn-train"

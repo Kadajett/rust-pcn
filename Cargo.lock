@@ -3245,7 +3245,11 @@ name = "pcn"
 version = "0.1.0"
 dependencies = [
  "burn",
+ "burn-fusion",
+ "burn-jit",
  "clap",
+ "cubecl",
+ "cudarc",
  "flate2",
  "ndarray 0.16.1",
  "ndarray-rand",

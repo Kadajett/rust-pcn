@@ -30,6 +30,11 @@ STAGE_BOUNDARY_WAIT_SECONDS = 1800
 ACTIVE_TRAINER_STATUSES = {"training", "training_tasks", "training_noul", "checkpointing"}  # portal/server.py
 FIXTURE_VERSION = "river-capabilities-facts-v1"
 FAMILIES = ("prose", "code", "structured", "choice", "score", "noul")
+# The portal answers 409 while the previous probe's handoff files are still being cleared (a few seconds on a
+# bridged remote trainer); the cases are posted one after another, so a busy answer is retried, not graded.
+BUSY_HTTP_STATUS = 409
+BUSY_RETRIES = 24
+BUSY_RETRY_SECONDS = 5
 
 
 def timestamp() -> str:
@@ -431,6 +436,12 @@ def main() -> None:
     results = []
     for case in fixtures():
         http = fetch(args.url, case["request"])
+        busy_retries = 0
+        while http["http_status"] == BUSY_HTTP_STATUS and busy_retries < BUSY_RETRIES:
+            busy_retries += 1
+            time.sleep(BUSY_RETRY_SECONDS)
+            http = fetch(args.url, case["request"])
+        http["busy_retries"] = busy_retries
         body = http["body"]
         answer = None
         errors = list(http["errors"])
@@ -469,7 +480,8 @@ def main() -> None:
         "started_at": started, "finished_at": timestamp(), "test_url": args.url,
         "scope": "Semantic grading applies only to these fifteen fixed fact-based fixtures in six families; not general capability or next-byte quality.",
         "limits": {"http_timeout_seconds": HTTP_TIMEOUT, "portal_timeout_seconds": 600,
-                   "automatic_retries": 0, "concurrent_requests": 1, "outputs_per_request": 1,
+                   "automatic_retries": f"only HTTP {BUSY_HTTP_STATUS} (portal busy), up to {BUSY_RETRIES} x {BUSY_RETRY_SECONDS}s",
+                   "concurrent_requests": 1, "outputs_per_request": 1,
                    "text_max_bytes": 48,
                    "typed_candidate_pairs": {"noul": 1, "choice": 2, "score": 3},
                    "code_subprocess_timeout_seconds": 3, "code_subprocess_cpu_seconds": 1,

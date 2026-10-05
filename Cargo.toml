@@ -2,6 +2,7 @@
 name = "pcn"
 version = "0.1.0"
 edition = "2021"
+description = "River predictive-coding base for the Song v0.1 multimodal model"
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -14,43 +15,65 @@ expect_used = "warn"
 panic = "warn"
 
 [dependencies]
-ndarray = "0.16"
+burn = { version = "0.16.1", features = ["ndarray"] }
+clap = { version = "4.5", features = ["derive"] }
+flate2 = "1.1"
+ndarray = { version = "0.16", features = ["serde"] }
 ndarray-rand = "0.15"
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rayon = "1.8"
-clap = { version = "4", features = ["derive"] }
-chrono = "0.4"
-burn = { version = "0.16", features = ["ndarray"] }
-# For BLAS (optional, for performance)
-# ndarray-linalg = { version = "0.16", features = ["openblas-static"] }
+rusqlite = "0.32"
+thiserror = "1.0"
 
 [features]
-default = ["wgpu"]
-wgpu = ["burn/wgpu"]
+default = ["cuda"]
 cuda = ["burn/cuda-jit"]
 
 [[bin]]
-name = "pcn-train"
+name = "jev-pcn-train"
 path = "src/bin/train.rs"
 
+
 [[bin]]
-name = "pcn-generate"
-path = "src/bin/generate.rs"
+name = "jev-pcn-score"
+path = "src/bin/score.rs"
+required-features = ["cuda"]
 
-[dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-approx = "0.5"
+[[bin]]
+name = "river-pcn-migrate-multimodal"
+path = "src/bin/migrate_multimodal.rs"
 
-[[bench]]
-name = "pcn_bench"
-harness = false
+[[bin]]
+name = "river-pcn-train-multimodal"
+path = "src/bin/train_multimodal.rs"
+required-features = ["cuda"]
+
+[[bin]]
+name = "river-pcn-eval-multimodal"
+path = "src/bin/eval_multimodal.rs"
+
+[[bin]]
+name = "river-pcn-generate"
+path = "src/bin/generate_multimodal.rs"
+
+[[bin]]
+name = "river-pcn-migrate-universal"
+path = "src/bin/migrate_universal.rs"
+
+[[bin]]
+name = "river-pcn-train-universal"
+path = "src/bin/train_universal.rs"
+
+[[bin]]
+name = "river-pcn-expand-universal-experts"
+path = "src/bin/expand_universal_experts.rs"
+
+[[bin]]
+name = "river-pcn-repair-universal"
+path = "src/bin/repair_universal.rs"
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-
-[profile.bench]
-opt-level = 3

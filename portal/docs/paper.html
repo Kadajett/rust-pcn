@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Intention Is Everything: a revised technical position paper on River predictive coding, SEAL surprise-gated learning, and causal attention.">
+  <title>Intention Is Everything · River Song</title>
+  <link rel="stylesheet" href="/docs/docs.css?v=2">
+</head>
+<body>
+  <header class="site-head"><div class="shell"><a class="brand" href="/">River Song <small>Docs</small></a><nav aria-label="Documentation"><a href="/docs/">Overview</a><a href="/docs/model">Model</a><a href="/docs/training">Training</a><a href="/docs/data">Data</a><a href="/docs/outputs">Outputs</a><a aria-current="page" href="/docs/paper">Paper</a><a href="/">Live dashboard</a></nav></div></header>
+  <main class="shell paper-shell">
+<article class="paper">
+  <header>
+    <h1>Intention Is Everything: Surprise-Gated Predictive Coding Meets Causal Attention</h1>
+    <p class="paper-byline">Astra · Revised second edition for the River Song project</p>
+    <p class="paper-status"><em>Technical position paper and preregistered architecture proposal. This revision is a separate artifact and does not replace the original draft. River v4 and optional SEAL are implemented; River v5 and the PCN–Transformer hybrid are proposals, not experimental results.</em></p>
+  </header>
+
+  <section>
+    <h2>Abstract</h2>
+    <p>A fluent answer can remember every sentence it has generated and still lose the reason it was asked to speak. Consider a request containing an image of a machine panel, structured telemetry, and the question, “Which warning is justified, and how strongly?” Causal self-attention can preserve the wording, entities, and commitments in the growing answer. It does not guarantee that the answer remains controlled by the panel, the telemetry, or the requested criterion.</p>
+    <p>This paper proposes a division of labor. A predictive-coding network settles the request into a persistent, request-local state. An adapter exposes that state as cross-attention memory to a causal decoder. The decoder consults it at every token step while self-attention preserves exact linguistic history. A stop-gradient boundary keeps decoder cross-entropy and global backpropagation out of the predictive-coding network. PCN learning remains local and contrastive, optionally modulated by Surprise-gated Exponential-Average Learning, or SEAL; decoder and adapter learning use next-token cross-entropy in an alternating training phase.</p>
+    <p>The implemented starting point is River v4, a tied-weight predictive-coding network with shape <code>544 → 9,216 → 9,216 → 516</code>. Its three inherited Pinball outputs are a partial compatibility surface, not River’s intended identity or final action vocabulary. River v5, with proposed shape <code>576 → 9,216 → 9,216 → 5,386</code>, and the subsequent PCN–Transformer are designs to test, not achievements to report. The claim is deliberately causal: if the settled state deserves the name <em>intention</em>, controlled interventions on it must change grounded content in predictable ways while leaving some local fluency intact.</p>
+  </section>
+
+  <section>
+    <h2>A warning request, followed all the way through</h2>
+    <p>Suppose a request includes an image showing an amber coolant symbol. The accompanying machine state reports low coolant pressure and normal oil pressure. The user asks, “Which warning is justified, and how strongly?” A useful system should connect the visual symbol to the telemetry, distinguish coolant from oil, respect the request for calibrated strength, and avoid drifting toward whichever machine warning is most common in its language data.</p>
+    <p>There are two kinds of memory in that job. During generation, the model must remember that it already named the coolant system, that it promised to explain the evidence, and that a later pronoun refers to the warning rather than the machine. Causal self-attention is built for that exact-token history. But the response must also remain answerable to facts that precede the generated prefix: this image, this telemetry, this question, and this output criterion.</p>
+    <p>I use <em>intention</em> for the settled state carrying those request-specific constraints. The term does not imply consciousness, desire, agency, private goals, or moral status. Operationally, intention is a finite control variable produced from the evidence, task, criteria, output contract, and any prior typed results. It is request-local and discarded at the end of the request. More importantly, it must exert measurable causal force. If removing or replacing it does not alter grounded claims, the word is doing rhetorical work rather than technical work.</p>
+    <p>River is a plausible place to test this distinction because it already settles hidden states through iterative predictive-coding dynamics. It is not yet evidence that the distinction is useful. River v4 does not provide capable long-context language generation or causal attention. The point of the proposed hybrid is to make the two responsibilities separable enough to test.</p>
+  </section>
+
+  <section>
+    <h2>What exists, and what does not</h2>
+    <p>Before going farther, here is the line I do not want the argument to blur. River v4 exists. It is a tied-weight PCN with shape <code>544 → 9,216 → 9,216 → 516</code>, iterative settling, local contrastive updates, 256 latent outputs, a 257-way byte/EOS head, and three inherited Pinball compatibility values named <code>left_flipper</code>, <code>right_flipper</code>, and <code>tilt_or_shop_exit</code>. Those three values are not the full game control scheme. Actual play needs five independently requestable actions: left and right flipper, plus left, right, and up tilt.</p>
+    <p>Pinball is an ancestor task and a retention probe, not the definition of River’s output. The intended runtime contract resembles the request already sent to Jev: provide visible state and explicit instructions, then ask for typed answers with criteria or options. A play request can ask five parallel Noul questions—one per action—while another request can ask for Choice, Score, structured data, or text. The same shared model answers the requested contract instead of exposing “Pokémon only” columns as its universal interface.</p>
+    <p>River v5 is on the drawing board: a forward descendant with shape <code>576 → 9,216 → 9,216 → 5,386</code>, preserving every v4 coordinate while appending request conditioning, universal typed outputs, latent capacity, and token supports. The PCN–Transformer comes after that. It is a proposed zero-gated causal decoder that reads a settled PCN state through an adapter and a stop-gradient boundary.</p>
+    <p>The rest is hypothesis. The settled state may improve evidence-sensitive answers beyond a budget-matched attention-only system. Causal attention may preserve exact prefix information better than latent carry alone. SEAL may improve cumulative local learning without unacceptable forgetting or instability. “May” is doing real work in all three sentences.</p>
+  </section>
+
+  <section>
+    <h2>Predictive coding in River</h2>
+    <p>River’s matrices are generative: layer <code>l</code> predicts the state below it. For state <code>x[l]</code>, the local top-down prediction is</p>
+    <div class="paper-equation"><code>μ[l−1] = W[l] tanh(x[l]) + b[l−1]</code></div>
+    <p>and the corresponding prediction error is</p>
+    <div class="paper-equation"><code>ε[l−1] = x[l−1] − μ[l−1].</code></div>
+    <p>The network energy is the sum of squared local errors:</p>
+    <div class="paper-equation"><code>E = ½ Σ_l ||ε[l]||².</code></div>
+    <p>Inference is iterative rather than a single feed-forward pass. After bottom-up initialization, non-input states repeatedly relax according to</p>
+    <div class="paper-equation"><code>x[l] += α (−ε[l] + W[l]ᵀ ε[l−1] tanh′(x[l])).</code></div>
+    <p>The first term pulls the state toward the prediction from above. The second carries error from below through the same tied generative matrix. This places River within a broad predictive-coding tradition discussed by <a href="https://doi.org/10.1162/NECO_a_00949">Whittington and Bogacz</a> and surveyed by <a href="https://arxiv.org/abs/2202.09467">Millidge and colleagues</a>. Those references supply context; they do not validate River’s particular implementation or the hybrid proposed here.</p>
+    <p>River’s local weight update is</p>
+    <div class="paper-equation"><code>ΔW[l] = η ε[l−1]ᵀ tanh(x[l]) / batch.</code></div>
+    <p>In contrastive training, River subtracts free-phase correlations from positive-phase correlations. The phases must actually differ. If both clamp the same values and follow the same relaxation, the contrastive signal collapses to zero. River v4 instead uses a masked objective: the positive phase sees clean sensory input and selected output targets, while the free phase sees corrupted input with only observed coordinates clamped. Missing sensory coordinates settle, producing different local errors without a backward graph or global optimizer.</p>
+    <p>The implemented v4 shape is <code>544 → 9,216 → 9,216 → 516</code>. Its input includes a 512-coordinate sensory surface and 32 typed sideband coordinates. Outputs 0–2 preserve the old three-value Pinball compatibility contract; they do not cover the full five-action control surface. Another 256 coordinates are latent, and 257 encode byte values plus EOS. Text and code arrive as short byte windows; images arrive as 12-by-12 RGB patches and are input only. These facts and present limitations are recorded in River’s <a href="/docs/model">source architecture page</a>. That page is implementation documentation, not external peer review.</p>
+  </section>
+
+  <section>
+    <h2>SEAL changes plasticity, not inference</h2>
+    <p>SEAL means <strong>Surprise-gated Exponential-Average Learning</strong>. The expansion appears in the implementation’s CLI help, in <code>SealConfig</code> documentation, and in the project’s <a href="https://github.com/Kadajett/rust-pcn/blob/main/docs/SEAL-PCN-analysis.md">SEAL-PCN analysis</a>. It is an optional, implemented modulation of River’s local learning rule.</p>
+    <p>For each layer, the implementation measures positive-phase root-mean-square prediction error <code>e_l</code>. It tracks expected error <code>m_l</code> with an exponential moving average, then computes a dimensionless surprise ratio:</p>
+    <div class="paper-equation"><code>r_l = e_l / (m_l + ε).</code></div>
+    <p>The ratio becomes a bounded learning-rate modulation:</p>
+    <div class="paper-equation"><code>q_l = sigmoid(s_l log(max(r_l, ε)))</code><br><code>a_l = a_min + (a_max − a_min) q_l</code><br><code>η_l = η a_l.</code></div>
+    <p>The current defaults are EMA decay <code>0.1</code>, sensitivity <code>5.0</code>, modulation bounds <code>0.3</code> to <code>1.7</code>, and epsilon <code>1e−6</code>. Boundary reset is enabled with blend <code>0.5</code>. Adaptive sensitivity is off by default; when enabled, it scales sensitivity using an EMA estimate of error variance. Initialization and run-boundary reset both use neutral modulation <code>1.0</code>.</p>
+    <p>Nothing in this mechanism changes the predictive-coding energy or the settling equations. SEAL keeps no backward graph, global gradient, or optimizer state. It asks a narrow question: when a layer’s current error is unusual relative to its own recent baseline, how much should that layer’s already-local update be amplified or reduced? The bounds are essential because surprise is ambiguous. A useful novelty, a damaged input, and a domain transition may all raise error.</p>
+    <p>SEAL should not be described as attention. It retrieves no earlier token and forms no key-value address. Conversely, attention does not decide that a local generative synapse deserves more plasticity because its prediction error departed from expectation. Related work such as <a href="https://doi.org/10.1371/journal.pcbi.1011843">Ellwood’s study of short-term Hebbian learning and transformer-like attention</a> makes the relationship worth investigating, but it neither validates SEAL nor establishes this architecture.</p>
+  </section>
+
+  <section>
+    <h2>An operational contract for intention</h2>
+    <p>For a request <code>R</code>, let the PCN assimilate the visible state, image or other evidence, question, requested criterion, output contract, and available typed results. This is deliberately the same shape of interaction used to ask Jev for a Noul, Choice, or Score: the question and its criteria are runtime input, not permanent output coordinates. After iterative relaxation, selected persistent latent coordinates form the intention state <code>I(R)</code>. In River v5, the proposed persistent multimodal latent has 1,024 coordinates. The state is settled before autoregressive generation and remains request-local.</p>
+    <p>For the initial hybrid, the proposed adapter begins with <code>LayerNorm(stopgrad(I(R)))</code>, projects <code>1,024 → 256 → 4,096</code>, and reshapes the result into eight 512-wide memory slots with learned slot embeddings. That is about 1.3 million parameters. The slots are computed once per request; at every generated token, each decoder block uses its token state as the cross-attention query and the eight slots as keys and values. Eight slots and rank 256 are baseline choices to preregister and ablate, not implemented facts or claims of optimality.</p>
+    <p>Return to the coolant request. The PCN settles the amber symbol, low coolant pressure, normal oil pressure, and the instruction to report both warning identity and strength. The adapter exposes that settled state to every decoder block. At the first generated token, cross-attention can influence whether the answer begins with “coolant” rather than “oil.” At later tokens it remains available when the decoder explains the evidence or qualifies confidence. The generated prefix does not have to carry the entire burden of remembering why the response exists.</p>
+    <p>For Pinball, the analogous request carries the current board state and asks five parallel questions: press left flipper, press right flipper, tilt left, tilt right, and tilt up. Each answer has its own true/false criteria and calibration. This can express simultaneous actions and the complete directional tilt surface without turning the universal head back into a game-specific output vector. The inherited three-value head remains only as a frozen lineage check while the request-conditioned contract learns to play.</p>
+    <p>The causal claim is tested through three distinct interventions. A <strong>zero</strong> intervention replaces the intention memory with zeros. It should weaken evidence-specific content and criterion adherence while leaving some grammar and short-range coherence available through the decoder. A <strong>shuffle</strong> intervention permutes the memory’s organization within the request while retaining its broad scale and marginal values. It should damage relationships among the image, machine state, and requested output more than a simple change in activation magnitude would. A <strong>swap</strong> intervention holds the prompt and generated prefix fixed but supplies the settled state from a matched different request—for example, one supporting an oil warning instead of a coolant warning. If the memory has causal force, grounded claims should move toward the donor evidence or become detectably inconsistent.</p>
+    <p>These tests separate intention from general competence. Zeroing may show that the decoder needs some request signal; shuffling tests whether the internal organization matters; swapping asks which request actually controls the answer. If all three leave grounded output unchanged, the decoder is routing around the PCN state. If they destroy syntax as completely as grounding, the supposed intention channel may merely be a general language bottleneck. Neither outcome supports the intended division of labor.</p>
+  </section>
+
+  <section>
+    <h2>River v5 and the PCN–Transformer</h2>
+    <p>River v5 is proposed with shape <code>576 → 9,216 → 9,216 → 5,386</code>. Every v4 coordinate is preserved, and new request controls are appended. The persistent multimodal latent expands from 256 to 1,024 coordinates. Universal typed outputs are appended for runtime-question-conditioned Noul, dynamic Choice support, normalized Score, confidence, and abstention. A single request may ask several outputs in parallel—for example, five Pinball action Nouls—without reserving five permanent game columns. A 4,096-entry byte-fallback token head plus EOS is appended while the inherited byte head remains intact.</p>
+    <p>Context claims would be earned in stages: 128 tokens, then 256, 512, and finally 1,024 only when reference and grounding evidence support each increase. A runtime limit is not evidence of usable context. Accepting 1,024 tokens while behaving as though only the last 64 mattered would not count as long-context success.</p>
+    <p>After v5, the proposal appends a small causal Transformer decoder: four decoder blocks, width 512, eight attention heads, 1,536-wide feed-forward paths, rotary position encoding, and tied 4,096-token embeddings. Together with the low-rank adapter, this remains within the rough 15–20 million new-parameter target. Each block uses causal self-attention over prior generated tokens and cross-attention to the eight adapted PCN memory slots. A request-local KV cache stores token keys and values; it is ephemeral inference state, not model weight or cross-request memory.</p>
+    <p>The combined token support is</p>
+    <div class="paper-equation"><code>final_logits = river_logits + g × attention_logits.</code></div>
+    <p>Migration begins with <code>g = 0</code>. Appended tensors may exist, but they contribute nothing, so that migrated checkpoint must preserve parent behavior within the declared numerical regime. There is a cold-start catch: at exactly zero, the mixed-logit loss cannot train the decoder branch. During warm-up, the adapter and decoder therefore receive an auxiliary next-token cross-entropy loss directly on <code>attention_logits</code> while the deployed mixed path stays at <code>g = 0</code> and the PCN remains detached. Only after the branch passes frozen checks may <code>g</code> rise and the mixed logits train. Exact parent parity belongs to the initial zero-gate checkpoint, not to descendants after the gate opens.</p>
+    <p>Once causal self-attention is active, the system must be called a <strong>PCN–Transformer</strong>. The PCN still settles the request and learns locally; the decoder uses attention and a different training rule. Calling the whole system a pure PCN would hide the most important experimental boundary.</p>
+  </section>
+
+  <section>
+    <h2>The training boundary</h2>
+    <p>The first training contract is intentionally boring. During a PCN phase, River performs its positive and free settling phases and applies local contrastive updates. When enabled for that condition, SEAL modulates those local updates. Decoder cross-entropy plays no part in the PCN update.</p>
+    <p>During a decoder phase, the PCN settles each request and produces <code>I(R)</code>. The settled state is detached at an explicit stop-gradient boundary, and every PCN parameter stays frozen. In warm-up, auxiliary next-token cross-entropy on <code>attention_logits</code> trains the adapter and decoder without opening the zero gate. After the branch clears its frozen checks, training may move to cross-entropy on <code>final_logits</code> while <code>g</code> rises under the declared schedule.</p>
+    <p>Training alternates these phases rather than blending them silently. The schedule, phase lengths, data exposure, auxiliary-loss duration, gate schedule, and update accounting must be declared before a run. A negative result then remains interpretable: poor grounding cannot be explained away by an undocumented global gradient path, and weak language cannot be mistaken for proof that local PCN learning failed.</p>
+    <p>A future experiment may allow decoder gradients to enter the PCN. If so, it is a different model. It must be named separately, assigned its own training condition, and reported without combining its results with the stop-gradient PCN–Transformer described here.</p>
+  </section>
+
+  <section>
+    <h2>Forward-only migration</h2>
+    <p>River’s lineage rule is stricter than ordinary checkpoint selection. Every new finite checkpoint descends from the newest finite checkpoint, even when that checkpoint regresses in quality. The project does not branch from an older favorite simply because it scores better. A numerically invalid batch stopped before checkpointing never enters the lineage; otherwise correction proceeds through a child of the newest finite checkpoint.</p>
+    <p>The v4 parent must first be documented with hashes, tensor ranges, corpus cursors, calibration state, and frozen evaluation reports. Migration to v5 copies every compatible coordinate exactly and initializes only appended controls, rows, outputs, latent capacity, and token supports. Inherited matrices remain frozen while appended capacity learns, with rehearsal of Pinball and earlier corpora. Guarded shared PCN plasticity may follow at smaller rates, with SEAL-on, SEAL-off, and fixed-rate controls.</p>
+    <p>The decoder is then appended with <code>g = 0</code>, and parent parity is tested before attention training. Decoder and adapter training begin with the PCN frozen under the stop-gradient contract. Context gates advance through 128, 256, 512, and 1,024 tokens only after the corresponding frozen tests pass. A regression is something to repair in a descendant, not permission to erase the path that produced it.</p>
+  </section>
+
+  <section>
+    <h2>Preregistered evaluation protocol</h2>
+    <p>No benchmark outcome is claimed here. Before training, the evaluation package should freeze data splits, prompt templates, corruption procedures, intervention seeds, checkpoint-selection rules, numerical tolerances, and analysis code. Primary endpoints and acceptance margins must also be fixed before training. Choosing thresholds after seeing favorable curves would turn a falsifiable comparison into retrospective storytelling.</p>
+    <p>The primary architectural comparison is among PCN-only, attention-only, and stop-gradient hybrid systems. The attention-only baseline must receive the same image, machine state, question, and output contract through a declared encoder rather than being denied information available to the hybrid. Comparisons should match training examples, token exposure, update opportunities, and hardware envelope. Parameter and compute matching should be specified separately when they cannot both be exact; unmatched quantities must be reported rather than concealed.</p>
+    <p>Frozen probes should include the machine-warning family used throughout this paper: the image, state, and criterion are varied independently while irrelevant wording is held stable. They should also include request-conditioned Pinball play across all five independent actions—left and right flipper, left and right tilt, and up tilt—while the inherited three-value controller remains a separate retention check. Additional probes should test exact reference, list order, quotations, code symbols, typed outputs, calibration, abstention, and retention of earlier corpora. Probe items used for final reporting must not become training prompts or informal tuning tools.</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Primary question</th>
+          <th>Required comparison or intervention</th>
+          <th>Endpoints</th>
+          <th>Falsification condition</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Does settled intention improve grounding?</td>
+          <td>Budget-matched attention-only versus hybrid; hybrid with zero, shuffle, and swap interventions.</td>
+          <td>Image/state answer correctness, contradiction rate, criterion adherence, typed calibration, and evidence-counterfactual sensitivity.</td>
+          <td>The hybrid provides no preregistered gain, or intention interventions leave grounded claims materially unchanged.</td>
+        </tr>
+        <tr>
+          <td>Does causal attention improve exact history?</td>
+          <td>PCN-only versus hybrid; intact, zeroed, shuffled, truncated, and length-limited KV cache.</td>
+          <td>Entity reference, list order, code symbols, and quotations at 128, 256, 512, and 1,024 tokens.</td>
+          <td>The cache produces no reliable benefit under the declared parameter and compute controls.</td>
+        </tr>
+        <tr>
+          <td>Does cross-attention resist fluent drift?</td>
+          <td>Hybrid with and without cross-attention to the same settled PCN state.</td>
+          <td>Late-answer contradictions, image/state grounding after long prefixes, and continued compliance with the requested criterion.</td>
+          <td>Removing cross-attention is equal or better on the preregistered grounding endpoints.</td>
+        </tr>
+        <tr>
+          <td>Does SEAL improve cumulative local learning?</td>
+          <td>SEAL on, SEAL off, and fixed-rate PCN controls.</td>
+          <td>New-task learning speed, old-corpus retention, Pinball retention, update norms, and numerical instability.</td>
+          <td>SEAL yields no Pareto improvement or produces greater forgetting or instability.</td>
+        </tr>
+        <tr>
+          <td>Does the zero gate preserve the parent?</td>
+          <td>Parent v5 versus migrated hybrid with <code>g = 0</code>.</td>
+          <td>Copied-tensor identity and output deltas on frozen probes.</td>
+          <td>Any unexplained difference beyond the numerical tolerance fixed before migration.</td>
+        </tr>
+        <tr>
+          <td>Are text gains compatible with typed reliability?</td>
+          <td>PCN-only, attention-only, and hybrid under the same frozen typed probes.</td>
+          <td>Noul Brier/ECE, Choice NLL, Score MAE, abstention behavior, schema validity, relevance, and coherence.</td>
+          <td>Language improvement requires a preregistered unacceptable loss in calibration, typed accuracy, or legacy retention.</td>
+        </tr>
+        <tr>
+          <td>Can play be requested instead of hard-wired?</td>
+          <td>Five parallel action Nouls through the universal request contract versus the inherited three-value compatibility controller.</td>
+          <td>Per-action calibration, simultaneous-action behavior, left/right/up tilt discrimination, score and progress outcomes, and legacy retention.</td>
+          <td>The request-conditioned path cannot learn all five controls, collapses distinct tilt directions, or gains play capability only by degrading the inherited controller.</td>
+        </tr>
+        <tr>
+          <td>Is the system operationally viable?</td>
+          <td>All variants measured on the same hardware and request sets.</td>
+          <td>GPU peak memory, first-token latency, tokens per second, and energy per request.</td>
+          <td>The hybrid exceeds the RTX 3050 6 GB envelope or misses the declared latency limits without the required compensating quality.</td>
+        </tr>
+      </tbody>
+    </table>
+    <p>Constrained decoding must be reported separately from semantic success. A grammar can force valid JSON without making the warning correct. Likewise, a model that repeats an early identifier at 1,024 tokens has not necessarily preserved image grounding. Each endpoint should measure the capability it names.</p>
+    <p>The coolant example gives the intervention protocol a concrete shape. Holding the prefix fixed while changing low coolant pressure to normal should alter the warning assessment. Holding telemetry fixed while changing the requested criterion from “most urgent warning” to “most visually supported warning” should change the selected output when those criteria disagree. Swapping in an oil-warning intention state should not leave a coolant-specific explanation untouched. These are planned causal probes, not reported outcomes.</p>
+  </section>
+
+  <section>
+    <h2>Limits and likely failure modes</h2>
+    <p>The central risk is that the decoder learns to ignore the PCN memory. A fluent token path can conceal a ceremonial latent, and repeated cross-attention does not guarantee faithful use. The opposite failure is also possible: the adapter may turn the settled state into a general language bottleneck, so interventions destroy syntax rather than selectively damaging grounding.</p>
+    <p>SEAL’s surprise ratio cannot identify why an event is surprising. Bounded modulation limits the size of an error, not its meaning. Forward-only lineage creates a different burden: it preserves historical continuity but may accumulate compromises that a clean restart would avoid. Multimodal exposure also does not create cross-modal semantics by itself; aligned tasks and counterfactual controls remain necessary.</p>
+    <p>Calibration claims must stay local to the held-out question families that support them. Unknown domains require abstention or an explicit uncalibrated label. Context length must be demonstrated causally rather than inferred from an accepted input size. All of this must fit an RTX 3050 with 6 GB, including KV caches, wider output heads, training tensors, and operational headroom.</p>
+    <p>Finally, this paper makes no priority claim. It proposes one synthesis and a way to test it. River v5 and the PCN–Transformer may fail, attention-only may prove sufficient, fixed-rate local learning may beat SEAL, or the stop-gradient boundary may leave the PCN poorly aligned with generation. Those outcomes would still be informative if the budgets, interventions, and lineage are reported honestly.</p>
+  </section>
+
+  <section>
+    <h2>Conclusion</h2>
+    <p>The proposal does not ask predictive coding to reproduce exact token history or ask attention to become a theory of purpose. River’s PCN settles multimodal evidence and task constraints. SEAL optionally modulates local plasticity when layer error departs from its recent expectation. The adapter gives the decoder a stable route to the settled state, while the stop-gradient boundary keeps the learning rules legible. Causal self-attention handles the generated prefix; cross-attention returns to the request at every token.</p>
+    <p>“Intention” earns its place only through intervention. Zero it, shuffle it, swap it, and change the evidence while holding the words fixed. If grounded behavior does not move as predicted, retire the term. If it does, the architecture has identified a useful control variable without pretending to have discovered a mind.</p>
+    <p>Attention keeps language aware of what it has said; intention keeps it answerable to why it is speaking.</p>
+  </section>
+
+  <section>
+    <h2>References</h2>
+    <ol>
+      <li>A. Vaswani et al., “<a href="https://arxiv.org/abs/1706.03762">Attention Is All You Need</a>,” 2017.</li>
+      <li>J. C. R. Whittington and R. Bogacz, “<a href="https://doi.org/10.1162/NECO_a_00949">An Approximation of the Error Backpropagation Algorithm in a Predictive Coding Network with Local Hebbian Synaptic Plasticity</a>,” <em>Neural Computation</em>, 2017.</li>
+      <li>B. Millidge et al., “<a href="https://arxiv.org/abs/2202.09467">Predictive Coding: Towards a Future of Deep Learning beyond Backpropagation?</a>,” 2022.</li>
+      <li>I. T. Ellwood, “<a href="https://doi.org/10.1371/journal.pcbi.1011843">Short-term Hebbian learning can implement transformer-like attention</a>,” <em>PLOS Computational Biology</em>, 2024.</li>
+      <li>River Song project, “<a href="/docs/model">Model architecture and implementation status</a>,” implementation documentation.</li>
+    </ol>
+  </section>
+</article>
+    <footer><span>Astra · Revised second edition</span><span><a href="/docs/model">Architecture reference</a></span></footer>
+  </main>
+</body>
+</html>

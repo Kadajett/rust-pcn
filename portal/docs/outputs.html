@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="dark"><title>River Outputs · Documentation</title><link rel="stylesheet" href="/docs/docs.css?v=2"></head>
+<body>
+<header class="site-head"><div class="shell"><a class="brand" href="/">River Song <small>Docs</small></a><nav aria-label="Documentation"><a href="/docs/">Overview</a><a href="/docs/model">Model</a><a href="/docs/training">Training</a><a href="/docs/data">Data</a><a aria-current="page" href="/docs/outputs">Outputs</a><a href="/docs/paper">Paper</a><a href="/">Live dashboard</a></nav></div></header>
+<main class="shell">
+<section class="hero"><p class="eyebrow">Caller-selected response primitive · River Song v0.1</p><h1>Outputs</h1><p class="lede">Song is a general-use model. A request can ask for named Noul, Choice, Score, schema-constrained structured, and natural-language answers—including prose, paragraphs, explanations, and code. Pokémon Pinball is one training and evaluation request family, not the model’s identity.</p></section>
+<section><h2>General output surface</h2><div class="cards"><article class="card"><span class="tag">Typed</span><h3>Noul, Choice, and Score</h3><p>Instructions travel with true/false criteria, variable options, or an ordered rubric. A caller can request several named decisions in one response rather than relying on a permanent task-specific output vector.</p></article><article class="card"><span class="tag">Structured</span><h3>Schema-constrained values</h3><p>Song can return JSON constructed under a caller-provided schema, including objects, arrays, bounded numbers, booleans, strings, enums, and null.</p></article><article class="card"><span class="tag">Language</span><h3>Natural language and code</h3><p>Plain-text mode covers sentences, paragraphs, explanations, and code. It uses the same request contract as the typed and structured modes and can appear beside them in a named multi-output response.</p></article><article class="card"><span class="tag">Active training</span><h3>Current Noul bootstrap</h3><p>The first request-conditioned Noul training stream uses the three Pokémon Pinball labels already available. That dataset tests the general question-and-criteria path; it does not redefine Song as a Pinball-only model.</p></article></div></section>
+<section class="section"><h2>Requested universal contract</h2><table><thead><tr><th>Type</th><th>Caller provides</th><th>River returns</th><th>Execution</th></tr></thead><tbody><tr><td><strong>Noul</strong></td><td>Atomic instructions plus true/false criteria</td><td>Calibrated <code>noul</code> in [0,1]</td><td>Parallel typed head</td></tr><tr><td><strong>Choice</strong></td><td>Instructions and variable options</td><td>Selected option, probabilities, confidence</td><td>Parallel candidate scoring</td></tr><tr><td><strong>Score</strong></td><td>Instructions and ordered rubric</td><td>Score, distribution, confidence</td><td>Parallel ordinal head</td></tr><tr><td><strong>Structured</strong></td><td>JSON Schema</td><td>Schema-valid semantic value</td><td>Constrained sequence decoder</td></tr><tr><td><strong>Text</strong></td><td>Instructions and generation controls</td><td>Natural-language sequence</td><td>Autoregressive decoder</td></tr></tbody></table></section>
+<section class="section"><h2>Pinball as a request, not a game head</h2><p class="copy">The target interface uses the same pattern as a Jev request: visible state plus explicit typed questions and criteria. Pinball is one caller-defined request family. Five parallel Nouls cover the complete action surface and allow simultaneous controls without reserving permanent output columns.</p><pre>{
+  "inputs": [{"type": "state", "value": {"game": "pokemon-pinball", "...": "..."}}],
+  "outputs": {
+    "left_flipper": {"type": "noul", "instructions": "Press the left flipper now?", "criteria": {"true": "Press", "false": "Hold"}},
+    "right_flipper": {"type": "noul", "instructions": "Press the right flipper now?", "criteria": {"true": "Press", "false": "Hold"}},
+    "tilt_left": {"type": "noul", "instructions": "Tilt left now?", "criteria": {"true": "Tilt left", "false": "Do not tilt left"}},
+    "tilt_right": {"type": "noul", "instructions": "Tilt right now?", "criteria": {"true": "Tilt right", "false": "Do not tilt right"}},
+    "tilt_up": {"type": "noul", "instructions": "Tilt up now?", "criteria": {"true": "Tilt up", "false": "Do not tilt up"}}
+  }
+}</pre></section>
+<section class="section"><h2>One multimodal request</h2><pre>{
+  "inputs": [
+    {"type": "image", "data": "..."},
+    {"type": "text", "text": "Inspection context"},
+    {"type": "state", "value": {"temperature": 91.4}}
+  ],
+  "outputs": {
+    "unsafe": {
+      "type": "noul",
+      "instructions": "Does the evidence support stopping the machine?",
+      "criteria": {
+        "true": "Stop operation",
+        "false": "Continued operation is acceptable"
+      }
+    },
+    "classification": {
+      "type": "structured",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "fault": {"type": "string"},
+          "severity": {"type": "integer", "minimum": 0, "maximum": 5}
+        },
+        "required": ["fault", "severity"]
+      }
+    },
+    "explanation": {
+      "type": "text",
+      "instructions": "Explain the evidence in one paragraph."
+    }
+  }
+}</pre></section>
+<section class="section"><h2>Response</h2><pre>{
+  "answers": {
+    "unsafe": {"type": "noul", "noul": 0.83},
+    "classification": {
+      "type": "structured",
+      "value": {"fault": "bearing overheating", "severity": 4}
+    },
+    "explanation": {
+      "type": "text",
+      "text": "The temperature and visible discoloration are consistent with..."
+    }
+  }
+}</pre></section>
+<section class="section"><h2>Question-conditioned Noul</h2><p class="copy">A universal Noul cannot reserve a permanent output coordinate for every future question. River must encode each question and its criteria alongside the shared multimodal state, then run the same calibrated scalar head for every requested Noul. Several questions can share the state encoding while remaining isolated from one another.</p><div class="diagram"><div class="node"><strong>State latent</strong><span>Text, image, and structured evidence encoded once.</span></div><div class="arrow">+</div><div class="node"><strong>Question latent</strong><span>Instructions and true/false criteria supplied at runtime.</span></div><div class="arrow">→</div><div class="node"><strong>Calibrated result</strong><span><code>{"type":"noul","noul":0.83}</code></span></div></div></section>
+<section class="section"><h2>Typed judgments stay PCN-native</h2><p class="copy">Noul, Choice, and Score do not require a Transformer decoder. River evaluates each caller-supplied criterion through the shared question-conditioned PCN path, normalizes the resulting candidate probabilities for Choice and Score, and returns the typed distribution. The later attention plan applies only to preserving exact long-range history during prose and code generation; it does not replace the Jev-style judgment path.</p></section>
+<section class="section"><h2>Persistent conditioning</h2><p class="copy">Structured and text decoding retain a stable request sketch and rolling response-prefix sketch for every generated token. A later byte is therefore conditioned on more than the immediately preceding 64-byte inherited window. This recurrent summary is bounded and is not equivalent to exact long-context attention.</p></section>
+<section class="section"><p class="eyebrow">Active v5 task path</p><h2>From inherited byte probes to supervised responses</h2><p class="copy">The current trainer keeps the inherited 64-byte next-byte objective and adds direct response-token supervision for instruction, conversation, grounded-QA, reasoning, code-instruction, and function-calling records. Typed records bypass the prose path and preserve their soft candidate distributions.</p><table><thead><tr><th>Path</th><th>Supervision</th><th>Held-out metric</th><th>Runtime state</th></tr></thead><tbody><tr><td>Typed Noul/Choice/Score</td><td>Original soft candidate probability</td><td>Brier ≤ 0.20 and rank accuracy ≥ 0.60</td><td>Promoted only after both pass</td></tr><tr><td>Persistent text/code</td><td>Response byte plus rolling prefix latent</td><td>Token accuracy ≥ 0.20</td><td>Inherited byte head until pass</td></tr><tr><td>Image-to-label</td><td>Class-label byte conditioned on image patch</td><td>Token accuracy ≥ 0.20</td><td>Reported separately</td></tr></tbody></table></section>
+<section class="section"><p class="eyebrow">Later text-memory stage</p><h2>Remembering the entire generated prefix</h2><p class="copy">A recurrent latent can summarize the answer so far, but summary is not exact memory. Long text needs direct access to earlier token representations so that pronouns, entities, code symbols, lists, quotations, and commitments remain consistent. River’s later text decoder therefore adopts the useful part of a Transformer: causal self-attention with a key/value cache.</p><div class="flow"><div>Embed each emitted token with its rotary position and append its key/value representations to the request-local cache.</div><div>At the next step, causal self-attention reads every allowed earlier token while preventing access to future targets.</div><div>Each block cross-attends to the fixed River multimodal latent, so attention to the generated prefix does not replace attention to the original request or image.</div><div>The decoder proposes residual token logits. A zero-initialized gate combines them with River’s already-trained token supports, preserving exact parent behavior at migration.</div><div>Grammar masks still constrain structured output after the two logit sources are combined.</div><div>EOS ends the request and the KV cache is destroyed; caches never cross users or requests.</div></div><table><thead><tr><th>Phase</th><th>Trainable parameters</th><th>Sequence length</th><th>Required evidence</th></tr></thead><tbody><tr><td><strong>Attention migration</strong></td><td>None; residual gate = 0</td><td>Parent limits</td><td>Bit-for-bit v5 token-logit parity</td></tr><tr><td><strong>Frozen-core decoder training</strong></td><td>New attention, cross-attention, embeddings, and output residual only</td><td>128 tokens</td><td>Lower held-out token loss and better reference consistency than PCN-only decoding</td></tr><tr><td><strong>Length curriculum</strong></td><td>Attention path; gate increases gradually</td><td>256 → 512 → 1,024</td><td>Entity, pronoun, list, code-symbol, quotation, and contradiction probes pass at every length</td></tr><tr><td><strong>Controlled joint tuning</strong></td><td>Attention plus small PCN projection/update budget</td><td>Promoted limit</td><td>Text gains without Pinball, typed-output, image-grounding, or earlier-corpus regression</td></tr></tbody></table><div class="notice"><strong>Why both mechanisms?</strong> The KV cache preserves precise linguistic history; the PCN latent preserves the meaning and multimodal evidence being discussed. Self-attention alone can remain internally consistent while drifting away from the request, and latent recurrence alone can remember the topic while losing exact wording. The hybrid is intended to prevent both failures.</div><h3>Promotion probes</h3><ul><li>Resolve references to entities introduced hundreds of tokens earlier.</li><li>Retain names, numbers, function signatures, and list ordering without substitution.</li><li>Detect contradictions against earlier statements in the same answer.</li><li>Continue nested syntax and code blocks after long intervening spans.</li><li>Keep image- and state-grounded claims sensitive to the original evidence through the final token.</li><li>Compare PCN-only, attention-only, zero-cache, shuffled-cache, and no-cross-attention ablations at the same token budget.</li><li>Measure KV-cache memory, first-token latency, tokens per second, and the 6 GB GPU ceiling before each length promotion.</li></ul></section>
+<section class="section"><h2>Promotion requirements</h2><ul><li>Typed Brier at or below 0.20 and candidate rank accuracy at or above 0.60 on the fixed reserved set.</li><li>Sequence and vision-language token accuracy at or above 0.20 on their fixed reserved sets.</li><li>Training counters do not enable a runtime path; persisted promotion flags do.</li><li>Structured validity and long-context retrieval remain separate requirements for their respective surfaces.</li><li>Legacy Pinball and inherited-output weights remain protected during task-path updates.</li></ul></section>
+<footer><span>Current and target contracts are intentionally separated</span><span><a href="/">Try the current model</a></span></footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>River Song Training Observatory</title>
+  <link rel="stylesheet" href="/style.css?v=20261004-prose-text-1">
+</head>
+<body>
+  <div class="noise"></div>
+  <main>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">River base · Song model · public v0.1</p>
+        <h1>River Song</h1>
+        <p class="subtitle">Custom-SEAL predictive-coding training observatory</p>
+      </div>
+      <div class="hero-actions">
+        <a class="docs-link" href="/docs/">Model docs</a>
+        <a class="docs-link" href="#friday-update">Friday update</a>
+        <div class="live-block">
+          <span id="connectionDot" class="dot"></span>
+          <div>
+            <strong id="status">Connecting</strong>
+            <small id="freshness">Awaiting telemetry</small>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section id="friday-update" class="panel friday-update" aria-label="Friday's latest progress update">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Latest message only</p><h2>Friday update</h2></div>
+        <p id="fridayUpdateTime" class="probe-note">Loading the latest update.</p>
+      </div>
+      <div id="fridayUpdateMessage" class="friday-update-body" aria-live="polite"></div>
+    </section>
+
+    <section class="progress-shell" aria-label="Training progress">
+      <div class="progress-copy">
+        <span id="phaseLabel">Preparing run</span>
+        <span id="progressText">0 / 0 batches</span>
+      </div>
+      <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+    </section>
+
+    <section class="metrics" aria-label="Current metrics">
+      <article><span>Lineage epoch</span><strong id="epochMetric">—</strong><small id="epochDetail">cycle details loading</small></article>
+      <article><span>Free energy</span><strong id="freeEnergy">—</strong><small>settled corrupted phase</small></article>
+      <article><span>Positive energy</span><strong id="positiveEnergy">—</strong><small>clean clamped phase</small></article>
+      <article><span>Throughput</span><strong id="throughput">—</strong><small>samples / second</small></article>
+      <article><span>Examples</span><strong id="sampleCount">—</strong><small id="anchorCount">— anchor rehearsals</small></article>
+      <article><span>Checkpoint</span><strong id="checkpointBatch">—</strong><small id="checkpointPath">waiting</small></article>
+      <article><span>Elapsed</span><strong id="elapsedMetric">—</strong><small>active training time</small></article>
+      <article><span>Next checkpoint</span><strong id="etaMetric">—</strong><small id="etaDetail">at current batch pace</small></article>
+      <article><span>Total scheduled ETA</span><strong id="totalEtaMetric">—</strong><small id="totalEtaDetail">waiting for the active schedule</small></article>
+    </section>
+
+    <section class="panel promotion-panel" aria-label="Checkpoint promotion gates">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Fixed held-out evaluation</p><h2>Promotion gates</h2></div>
+        <p id="promotionStatus" class="probe-note">Waiting for the first task-aware evaluation.</p>
+      </div>
+      <dl class="audit-metrics promotion-metrics">
+        <div><dt>Typed rank accuracy</dt><dd id="promotionTypedAccuracy">—</dd></div>
+        <div><dt>Typed Brier</dt><dd id="promotionTypedBrier">—</dd></div>
+        <div><dt>Sequence token accuracy</dt><dd id="promotionSequenceAccuracy">—</dd></div>
+        <div><dt>Vision-language token accuracy</dt><dd id="promotionVisionAccuracy">—</dd></div>
+        <div><dt>Held-out examples</dt><dd id="promotionExamples">—</dd></div>
+        <div><dt>Evaluated checkpoint</dt><dd id="promotionBatch">—</dd></div>
+      </dl>
+      <p id="promotionTypedDetail" class="audit-note"></p>
+      <p class="audit-note">These deterministic records never enter the task-aware output losses. Promotion requires every available gate to pass; inherited Pinball and byte-head retention remain separately rehearsed.</p>
+    </section>
+
+    <section class="panel promotion-panel" aria-label="Inherited generator learning">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Inherited byte generator · next byte</p><h2>Generator learning</h2></div>
+        <p id="generatorStatus" class="probe-note">Waiting for the first generator measurement.</p>
+      </div>
+      <dl class="audit-metrics promotion-metrics">
+        <div><dt>Held-out top-1 · majority-byte baseline</dt><dd id="generatorHeldoutTop1">—</dd></div>
+        <div><dt>Held-out top-5 · mean rank</dt><dd id="generatorHeldoutRank">—</dd></div>
+        <div><dt>Held-out non-space accuracy</dt><dd id="generatorHeldoutNonSpace">—</dd></div>
+        <div><dt>Held-out distinct predictions · mode</dt><dd id="generatorHeldoutDistinct">—</dd></div>
+        <div><dt>Free phase top-1 (masked) · batch majority baseline</dt><dd id="generatorFreeTop1">—</dd></div>
+        <div><dt>Free phase non-space · distinct · mode share</dt><dd id="generatorFreeDetail">—</dd></div>
+        <div><dt>Learning objective</dt><dd id="generatorObjective">—</dd></div>
+        <div><dt>Collapse protection</dt><dd id="generatorSafety">—</dd></div>
+        <div><dt>Held-out top-1 trend (oldest → newest)</dt><dd id="generatorTrend">—</dd></div>
+      </dl>
+      <p id="generatorDetail" class="audit-note"></p>
+      <p id="laneHeldout" class="audit-note"></p>
+      <p class="audit-note">Held-out: fixed held-out prose windows (record ordinal % 20 == 0, never trained), clean input, fresh settle, teacher-forced. Free phase: argmax of each training batch's settled free phase before its update; its input is masked, so it reads lower. Baselines are computed on the same rows.</p>
+    </section>
+
+    <section id="capabilityReport" class="panel capability-panel" aria-label="Complete-answer semantic capability evidence">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Recorded fact fixtures · public evidence</p><h2>Complete-answer expected vs actual</h2></div>
+        <p id="capabilityStatus" class="probe-note" aria-live="polite">Loading recorded semantic evidence · no API key required.</p>
+      </div>
+      <p class="scope-note">These small complete-answer fact fixtures cover prose, code, structured, Choice, Score, and continuous Noul. They are distinct from next-byte, byte-head, and token promotion metrics: not a frontier benchmark, general capability claim, or paired retention evaluation. Prose and code share Text outputs; family labels come from the saved fixtures.</p>
+      <p id="capabilityScope" class="scope-note"></p>
+      <p id="capabilityFreshness" class="capability-note"></p>
+      <p id="capabilityWarning" class="capability-warning"></p>
+      <p id="capabilityContract" class="capability-note"></p>
+      <div id="capabilitySummary" class="sample-accuracy-summary capability-summary"></div>
+      <p class="scope-note">Brier and MAE appear only where recorded. Choice/Score Brier sums squared category errors; Noul Brier is squared error against a continuous soft target, not a binary label. Score legends and distribution indices preserve their recorded order. Pass/fail and errors below are the saved semantic grades, not regraded byte accuracy.</p>
+      <div id="capabilityCases" class="capability-cases"><p class="empty">No evidence has loaded yet; accuracy is unavailable.</p></div>
+    </section>
+
+    <section class="grid">
+      <article class="panel chart-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Relaxation trace</p><h2>Energy</h2></div>
+          <div class="legend"><span class="free">Free</span><span class="positive">Positive</span></div>
+        </div>
+        <canvas id="energyChart" width="960" height="320"></canvas>
+      </article>
+
+      <article class="panel corpus-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Training mix</p><h2>Corpora</h2></div></div>
+        <div id="corpora" class="corpora"><p class="empty">Corpus manifest loads with the run.</p></div>
+        <p id="corpusTotal" class="corpus-total">— active examples this stage</p>
+        <div class="registry-heading"><span>Accepted dataset registry</span><small>Accepted means retained for future cumulative stages. Only the Training mix above is loaded by the current process.</small></div>
+        <div id="datasetRegistry" class="dataset-registry"><p class="empty">Dataset registry is loading.</p></div>
+        <dl class="run-config">
+          <div><dt>Relax steps</dt><dd id="relaxSteps">—</dd></div>
+          <div><dt>Scalar/input α</dt><dd id="alpha">—</dd></div>
+          <div><dt>Inherited layer α</dt><dd id="inheritedStateRates">—</dd></div>
+          <div><dt>Request layer α</dt><dd id="requestStateRates">—</dd></div>
+          <div><dt>Local rate η</dt><dd id="eta">—</dd></div>
+          <div><dt>Run</dt><dd id="runName">—</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="panel audit-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">TypeSafe Jev audit</p><h2>Quality versus energy</h2></div>
+        <p id="auditFreshness" class="probe-note">Waiting for the first external quality grade.</p>
+      </div>
+      <div class="audit-grid">
+        <div>
+          <div class="audit-legend">
+            <span class="accuracy">Strict contract pass · left %</span>
+            <span class="quality">External Jev quality · left %</span>
+            <span class="audit-energy">Free energy · right log scale</span>
+          </div>
+          <canvas id="qualityChart" width="960" height="320"></canvas>
+          <p id="auditCorrelation" class="audit-correlation">Correlation appears after three audits.</p>
+        </div>
+        <dl class="audit-metrics">
+          <div><dt>Strict contract pass</dt><dd id="exactAccuracy">—</dd></div>
+          <div><dt>External Jev quality</dt><dd id="jevQuality">—</dd></div>
+          <div><dt>Context fit</dt><dd id="contextFit">—</dd></div>
+          <div><dt>Response quality</dt><dd id="languageQuality">—</dd></div>
+          <div><dt>Diversity</dt><dd id="behavioralDiversity">—</dd></div>
+          <div><dt>Learned signal</dt><dd id="learnedSignal">—</dd></div>
+          <div><dt>Strongest area</dt><dd id="auditStrength">—</dd></div>
+          <div><dt>Dominant failure</dt><dd id="auditFailure">—</dd></div>
+        </dl>
+      </div>
+      <p class="audit-note">The graph uses the latest 100 complete test results. Strict contract pass includes Noul only when absolute error is at most 0.10 and a soft target is not answered with a saturated endpoint. Partial Choice, Score, and structured evidence remains separate. External Jev quality shares the fixed left 0–100% scale; the dashed energy trace uses the labeled logarithmic scale on the right. Correlation is observational, not causal.</p>
+    </section>
+
+    <section class="panel sample-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Live training inspection</p><h2>Expected vs actual</h2></div>
+        <p id="sampleStatus" class="probe-note">Loading live training results · no API key required.</p>
+      </div>
+      <p class="scope-note">Each row is a held-out prose question (never trained on), the answer we expect, and the text the live model generated for it.</p>
+      <div id="trainingSamples" class="training-samples">
+        <p class="empty">Results appear after the telemetry-enabled trainer starts.</p>
+      </div>
+    </section>
+
+    <section class="panel probe-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">Universal output · runtime v1</p><h2>Request named typed answers</h2></div>
+        <p id="probeNote" class="probe-note">The live trainer answers named requests between batches. Song’s general contract spans typed decisions, structured data, natural-language prose, and code.</p>
+      </div>
+      <div class="probe-grid">
+        <form id="probeForm">
+          <div class="row input-row">
+            <label>Input modality
+              <select id="modality"><option value="prose">Prose</option><option value="code">Code</option></select>
+            </label>
+          </div>
+          <label>Input prompt
+            <textarea id="prompt" rows="5" spellcheck="false">Summarize what you understand about this training run.</textarea>
+          </label>
+          <fieldset class="outputs-editor">
+            <div class="outputs-heading">
+              <div>
+                <span class="outputs-title">Named outputs</span>
+                <small>Noul, Choice, Score, text, and structured answers can share one request.</small>
+              </div>
+              <button id="addOutput" class="secondary-button" type="button">Add output</button>
+            </div>
+            <div id="outputRequests" class="output-requests"></div>
+          </fieldset>
+          <div class="row action-row">
+            <button id="runProbe" type="submit">Run live probe</button>
+          </div>
+        </form>
+        <div class="output-wrap">
+          <div class="output-head"><span>Named typed answers</span><span id="probeState">Idle</span></div>
+          <div id="probeOutput" class="probe-output">
+            <p class="empty">Submit a bounded probe to inspect the model's current response. Output scope distinguishes the foundation path from request-conditioned values.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel event-panel">
+      <div class="panel-heading"><div><p class="eyebrow">Latest updates</p><h2>Run log</h2></div></div>
+      <div id="events" class="events"><p class="empty">Waiting for the first training batch.</p></div>
+    </section>
+
+    <footer>
+      <span>River Song v0.1 · internal model lineage v5</span>
+      <span id="clock"></span>
+    </footer>
+  </main>
+  <script src="/app.js?v=20261005-objective-1" defer></script>
+</body>
+</html>

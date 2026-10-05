@@ -1,6 +1,5 @@
 # Rust
 /target/
-Cargo.lock
 **/*.rs.bk
 *.pdb
 
@@ -21,11 +20,19 @@ Cargo.lock
 # Logs
 *.log
 
-# Data (local, not committed)
+# Data (local, not committed). The registries, lineage and probe fixtures are small training configuration the
+# live trainer and helpers read, so they are tracked.
 /data/
-/datasets/
+/datasets/*
+!/datasets/*.json
+!/datasets/*.jsonl
+!/datasets/fits/
 *.csv
 *.bin
+
+# Python
+__pycache__/
+*.pyc
 
 # Environment
 .env

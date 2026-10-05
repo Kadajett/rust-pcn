@@ -1,0 +1,42 @@
+{
+  "format_version": 1,
+  "stage": "river-v4-corpus-v3",
+  "parent_checkpoint": "/bulk-storage/connectome-merc/river-multimodal-checkpoints/river-v4-corpus-run-v2",
+  "output_checkpoint": "/bulk-storage/connectome-merc/river-multimodal-checkpoints/river-v4-corpus-run-v3",
+  "parent_is_immutable": true,
+  "datasets": [
+    "books-local-v1",
+    "localdocs-v1",
+    "local-source-v1",
+    "tinyimagenet-converted-v1",
+    "cifar100-converted-v1",
+    "svhn-converted-v1",
+    "fashion-mnist-converted-v1",
+    "flowers102-converted-v1",
+    "stl10-converted-v1",
+    "pinball-replay-v1"
+  ],
+  "rehearsal": {
+    "replay_all_prior_datasets_each_epoch": true,
+    "replay_early_samples_each_epoch": true,
+    "pinball_examples": 8192,
+    "pinball_interval": 4
+  },
+  "training": {
+    "epochs": 100,
+    "batch_size": 2048,
+    "byte_head_reference_batch_size": 64,
+    "checkpoint_every_batches": 32,
+    "trunk_eta": 0.0000001,
+    "base_byte_head_update_scale": 32,
+    "effective_full_batch_byte_head_update_scale": 1024,
+    "max_energy": 10000000
+  },
+  "promotion_requires": [
+    "finite_energy",
+    "energy_below_guard",
+    "pinball_retention_evaluation",
+    "early_corpus_reconstruction_evaluation",
+    "strict_json_probe"
+  ]
+}

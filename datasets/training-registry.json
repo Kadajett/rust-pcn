@@ -1,0 +1,443 @@
+{
+  "format_version": 1,
+  "policy": {
+    "mode": "cumulative",
+    "remove_accepted_datasets": false,
+    "immutable_stage_checkpoints": true,
+    "replay_all_prior_datasets_each_stage": true,
+    "replay_early_samples_each_stage": true,
+    "require_retention_evaluation_before_promotion": true,
+    "storage_budget": {
+      "target_filesystem": "/fast-storage",
+      "dataset_root": "/fast-storage/river-datasets",
+      "minimum_free_bytes": 429496729600,
+      "max_next_acquisition_bytes": 10737418240,
+      "download_selected_files_only": true,
+      "retain_source_revision_and_file_hashes": true
+    }
+  },
+  "datasets": [
+    {
+      "id": "books-local-v1",
+      "source": "/bulk-storage/datasets/books",
+      "kind": "text",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "localdocs-v1",
+      "source": "/bulk-storage/localDocs/data/localDocs.db",
+      "kind": "text",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "local-source-v1",
+      "source": "/home/kadajett/Dev",
+      "kind": "code",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "tinyimagenet-converted-v1",
+      "source": "/bulk-storage/datasets/images/tinyimagenet-converted/data_batch_1.bin",
+      "kind": "image",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "cifar100-converted-v1",
+      "source": "/bulk-storage/datasets/images/cifar100-converted/data_batch_1.bin",
+      "kind": "image",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "svhn-converted-v1",
+      "source": "/bulk-storage/datasets/images/svhn-converted/data_batch_1.bin",
+      "kind": "image",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "fashion-mnist-converted-v1",
+      "source": "/bulk-storage/datasets/images/fashion-mnist-converted/data_batch_1.bin",
+      "kind": "image",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "flowers102-converted-v1",
+      "source": "/bulk-storage/datasets/images/flowers102-converted/data_batch_1.bin",
+      "kind": "image",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "stl10-converted-v1",
+      "source": "/bulk-storage/datasets/images/stl10-converted/data_batch_1.bin",
+      "kind": "image",
+      "status": "active",
+      "introduced_stage": "river-v4-corpus-v1"
+    },
+    {
+      "id": "pinball-replay-v1",
+      "source": "/bulk-storage/connectome-merc/marty-continuous-20260916",
+      "kind": "control-rehearsal",
+      "status": "active",
+      "introduced_stage": "river-v4-base"
+    },
+    {
+      "id": "dair-ai-emotion-split-v1",
+      "source": "https://huggingface.co/datasets/dair-ai/emotion",
+      "config": "split",
+      "kind": "text-classification",
+      "language": "en",
+      "features": [
+        "text",
+        "label"
+      ],
+      "labels": [
+        "sadness",
+        "joy",
+        "love",
+        "anger",
+        "fear",
+        "surprise"
+      ],
+      "splits": {
+        "train": 16000,
+        "validation": 2000,
+        "test": 2000
+      },
+      "license": "other",
+      "status": "queued-license-review",
+      "introduced_stage": null
+    },
+    {
+      "id": "zefancai-open-jev-release-v2-v1",
+      "source": "https://huggingface.co/datasets/ZefanCai/Open-Jev",
+      "config": "release-v2-redistributable",
+      "kind": "typed-decision",
+      "language": [
+        "en",
+        "zh",
+        "tr"
+      ],
+      "features": [
+        "state_json",
+        "question",
+        "kind",
+        "options",
+        "target"
+      ],
+      "splits": {
+        "train": 79116,
+        "calibration": 4672,
+        "validation": 3723,
+        "test": 10356,
+        "ood": 15701
+      },
+      "license": "cc0-1.0",
+      "status": "active",
+      "introduced_stage": "river-v5-auto-1790109779",
+      "notes": "Task-aware adapter supervises request-conditioned Noul/Choice/Score distributions directly. Deterministic 1-in-20 train records are reserved from task loss for fixed promotion evaluation; privileged metadata and official non-train split labels stay out of training.",
+      "prepared_path": "/fast-storage/river-datasets/zefancai-open-jev-release-v2-v1",
+      "prepared_records": 79116,
+      "prepared_bytes": 84939511,
+      "prepared_training_windows": 75160
+    },
+    {
+      "id": "jev217-pokemon-pokedex-v1",
+      "source": "https://huggingface.co/datasets/jev217/pokemon-with-pokedex-descriptions",
+      "config": "default",
+      "kind": "image-to-text",
+      "features": [
+        "image",
+        "text"
+      ],
+      "splits": {
+        "train": 1017
+      },
+      "license": "unspecified",
+      "status": "queued-license-review",
+      "introduced_stage": null
+    },
+    {
+      "id": "vagmi-jevlite-synthetic-v1",
+      "source": "https://huggingface.co/datasets/vagmi/jevlite_dataset",
+      "config": "default",
+      "kind": "typed-decision-soft-label",
+      "language": "en",
+      "features": [
+        "type",
+        "state",
+        "question",
+        "options",
+        "criteria",
+        "label",
+        "teacher_entropy"
+      ],
+      "splits": {
+        "train": 5398,
+        "validation": 468
+      },
+      "license": "cc-by-sa-4.0",
+      "status": "queued-attribution",
+      "introduced_stage": null,
+      "notes": "Preserve full soft-label distributions and state-disjoint validation; do not collapse labels to argmax."
+    },
+    {
+      "id": "databricks-dolly-15k-v1",
+      "source": "https://huggingface.co/datasets/databricks/databricks-dolly-15k",
+      "revision": "bdd27f4d94b9c1f951818a7da7fd7aeea5dbff1a",
+      "kind": "instruction-response",
+      "language": "en",
+      "features": [
+        "instruction",
+        "context",
+        "response",
+        "category"
+      ],
+      "rows": 15011,
+      "download_bytes": 13085339,
+      "license": "cc-by-sa-3.0",
+      "status": "active",
+      "priority": "high",
+      "introduced_stage": "river-v5-auto-1790124822",
+      "notes": "Human-authored instruction coverage across QA, extraction, summarization, classification, brainstorming, and generation.",
+      "prepared_path": "/fast-storage/river-datasets/databricks-dolly-15k-v1",
+      "prepared_records": 15011,
+      "prepared_bytes": 13603094,
+      "prepared_training_windows": 14260
+    },
+    {
+      "id": "openassistant-oasst2-v1",
+      "source": "https://huggingface.co/datasets/OpenAssistant/oasst2",
+      "revision": "179dd21fc55192153d94adb0e0ce8f69e222bf75",
+      "kind": "conversation-ranked",
+      "language": [
+        "en",
+        "multilingual"
+      ],
+      "features": [
+        "message_id",
+        "parent_id",
+        "text",
+        "role",
+        "lang",
+        "rank",
+        "labels"
+      ],
+      "splits": {
+        "train": 128575,
+        "validation": 6599
+      },
+      "download_bytes": 66674129,
+      "license": "apache-2.0",
+      "status": "queued-adapter",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Reconstruct reviewed prompt-to-leaf paths; use rank/labels for Choice and Score targets; exclude deleted or failed-review messages."
+    },
+    {
+      "id": "rajpurkar-squad-v2-v1",
+      "source": "https://huggingface.co/datasets/rajpurkar/squad_v2",
+      "revision": "3ffb306f725f7d2ce8394bc1873b24868140c412",
+      "kind": "grounded-question-answering",
+      "language": "en",
+      "features": [
+        "title",
+        "context",
+        "question",
+        "answers"
+      ],
+      "splits": {
+        "train": 130319,
+        "validation": 11873
+      },
+      "download_bytes": 17720493,
+      "license": "cc-by-sa-4.0",
+      "status": "queued-attribution-review",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Grounded answer generation plus explicit unanswerable examples for confidence and abstention."
+    },
+    {
+      "id": "hotpotqa-distractor-v1",
+      "source": "https://huggingface.co/datasets/hotpotqa/hotpot_qa",
+      "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
+      "config": "distractor",
+      "kind": "multi-hop-grounded-question-answering",
+      "language": "en",
+      "features": [
+        "question",
+        "answer",
+        "type",
+        "level",
+        "supporting_facts",
+        "context"
+      ],
+      "splits": {
+        "train": 90447,
+        "validation": 7405
+      },
+      "download_bytes": 359239231,
+      "license": "cc-by-sa-4.0",
+      "status": "queued-attribution-review",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Use the distractor configuration only; supporting facts provide explicit distant-evidence supervision for the 512-token continuation target."
+    },
+    {
+      "id": "salesforce-xlam-function-calling-60k-v1",
+      "source": "https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k",
+      "revision": "26d14ebfe18b1f7b524bd39b404b50af5dc97866",
+      "config": "dataset",
+      "kind": "structured-function-calling",
+      "language": "en",
+      "rows": 60000,
+      "download_bytes": 96116570,
+      "license": "cc-by-4.0",
+      "status": "queued-gated-access",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Requires Hugging Face access acknowledgment. Compile functions and calls into schema-conditioned structured-output examples."
+    },
+    {
+      "id": "openai-gsm8k-main-v1",
+      "source": "https://huggingface.co/datasets/openai/gsm8k",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "config": "main",
+      "kind": "reasoning-question-answering",
+      "language": "en",
+      "features": [
+        "question",
+        "answer"
+      ],
+      "splits": {
+        "train": 7473,
+        "test": 1319
+      },
+      "download_bytes": 2725633,
+      "license": "mit",
+      "status": "queued-adapter",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Reserve the official test split; extract final numeric answers separately from rationale text."
+    },
+    {
+      "id": "allenai-ai2-arc-v1",
+      "source": "https://huggingface.co/datasets/allenai/ai2_arc",
+      "revision": "210d026faf9955653af8916fad021475a3f00453",
+      "config": [
+        "ARC-Challenge",
+        "ARC-Easy"
+      ],
+      "kind": "multiple-choice-science",
+      "language": "en",
+      "features": [
+        "question",
+        "choices",
+        "answerKey"
+      ],
+      "splits": {
+        "train": 3370,
+        "validation": 869,
+        "test": 3548
+      },
+      "download_bytes": 1212395,
+      "license": "cc-by-sa-4.0",
+      "status": "queued-attribution-review",
+      "priority": "medium",
+      "introduced_stage": null,
+      "notes": "Dynamic Choice supervision with option-order permutation; preserve validation and test splits."
+    },
+    {
+      "id": "google-mbpp-full-v1",
+      "source": "https://huggingface.co/datasets/google-research-datasets/mbpp",
+      "revision": "4bb6404fdc6cacfda99d4ac4205087b89d32030c",
+      "config": "full",
+      "kind": "code-instruction",
+      "language": [
+        "en",
+        "python"
+      ],
+      "features": [
+        "task_id",
+        "text",
+        "code",
+        "test_list",
+        "test_setup_code",
+        "challenge_test_list"
+      ],
+      "splits": {
+        "train": 374,
+        "validation": 90,
+        "test": 500,
+        "prompt": 10
+      },
+      "download_bytes": 236069,
+      "license": "cc-by-4.0",
+      "status": "queued-adapter",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Tiny executable code-instruction corpus; tests are evaluation or verification inputs, not text targets."
+    },
+    {
+      "id": "anthropic-hh-rlhf-base-v1",
+      "source": "https://huggingface.co/datasets/Anthropic/hh-rlhf",
+      "revision": "09be8c5bbc57cb3887f3a9732ad6aa7ec602a1fa",
+      "config": [
+        "helpful-base",
+        "harmless-base"
+      ],
+      "kind": "response-preference",
+      "language": "en",
+      "features": [
+        "chosen",
+        "rejected"
+      ],
+      "download_bytes": 30115429,
+      "license": "mit",
+      "status": "queued-choice-adapter",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Use only as pairwise Choice/quality supervision. The dataset card explicitly warns against treating preference pairs as ordinary dialogue SFT."
+    },
+    {
+      "id": "truthfulqa-evaluation-v1",
+      "source": "https://huggingface.co/datasets/truthfulqa/truthful_qa",
+      "revision": "741b8276f2d1982aa3d5b832d3ee81ed3b896490",
+      "config": [
+        "generation",
+        "multiple_choice"
+      ],
+      "kind": "held-out-truthfulness-evaluation",
+      "language": "en",
+      "rows": 817,
+      "download_bytes": 493682,
+      "license": "apache-2.0",
+      "status": "queued-evaluation-only",
+      "priority": "high",
+      "introduced_stage": null,
+      "notes": "Never enter weight training or tokenizer fitting; retain as a contamination-checked truthfulness and Choice gate."
+    },
+    {
+      "id": "zai-longbench-evaluation-v1",
+      "source": "https://huggingface.co/datasets/zai-org/LongBench",
+      "revision": "5e628be450b7e67fb7ae6e201bd6d8f7056f7672",
+      "kind": "held-out-long-context-evaluation",
+      "language": [
+        "en",
+        "zh"
+      ],
+      "download_bytes": 113932529,
+      "license": "unspecified",
+      "status": "queued-license-review-evaluation",
+      "priority": "medium",
+      "introduced_stage": null,
+      "notes": "Evaluation only after license confirmation; do not use benchmark examples for weight training or tokenizer fitting."
+    }
+  ]
+}

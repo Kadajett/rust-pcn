@@ -1,0 +1,72 @@
+{"id": "prose-01", "kind": "prose", "prompt": "Which planet is known as the Red Planet?", "instructions": "Answer in one or two words.", "answer": "Mars."}
+{"id": "prose-02", "kind": "prose", "prompt": "What is the largest ocean on Earth?", "instructions": "Answer in one or two words.", "answer": "Pacific."}
+{"id": "prose-03", "kind": "prose", "prompt": "How many legs does a spider have?", "instructions": "Answer in one or two words.", "answer": "Eight."}
+{"id": "prose-04", "kind": "prose", "prompt": "Which gas do plants take in from the air?", "instructions": "Answer in one or two words.", "answer": "CO2."}
+{"id": "prose-05", "kind": "prose", "prompt": "Who wrote the play Romeo and Juliet?", "instructions": "Answer in one or two words.", "answer": "Shakespeare."}
+{"id": "prose-06", "kind": "prose", "prompt": "What is frozen water called?", "instructions": "Answer in one or two words.", "answer": "Ice."}
+{"id": "prose-07", "kind": "prose", "prompt": "What color is a clear daytime sky?", "instructions": "Answer in one or two words.", "answer": "Blue."}
+{"id": "prose-08", "kind": "prose", "prompt": "How many days are in a week?", "instructions": "Answer in one or two words.", "answer": "Seven."}
+{"id": "prose-09", "kind": "prose", "prompt": "Which animal is called the king of the jungle?", "instructions": "Answer in one or two words.", "answer": "The lion."}
+{"id": "prose-10", "kind": "prose", "prompt": "What is the opposite of hot?", "instructions": "Answer in one or two words.", "answer": "Cold."}
+{"id": "prose-11", "kind": "prose", "prompt": "What sweet food do bees make?", "instructions": "Answer in one or two words.", "answer": "Honey."}
+{"id": "prose-12", "kind": "prose", "prompt": "Which metal is liquid at room temperature?", "instructions": "Answer in one or two words.", "answer": "Mercury."}
+{"id": "prose-13", "kind": "prose", "prompt": "What is the closest star to Earth?", "instructions": "Answer in one or two words.", "answer": "The Sun."}
+{"id": "prose-14", "kind": "prose", "prompt": "How long is one full day?", "instructions": "Answer in one or two words.", "answer": "24 hours."}
+{"id": "prose-15", "kind": "prose", "prompt": "What is the chemical symbol for gold?", "instructions": "Answer in one or two words.", "answer": "Au."}
+{"id": "prose-16", "kind": "prose", "prompt": "Which season comes after winter?", "instructions": "Answer in one or two words.", "answer": "Spring."}
+{"id": "prose-17", "kind": "prose", "prompt": "Once upon a", "instructions": "Complete the saying with its missing final word.", "answer": "time."}
+{"id": "prose-18", "kind": "prose", "prompt": "The early bird catches the", "instructions": "Complete the saying with its missing final word.", "answer": "worm."}
+{"id": "prose-19", "kind": "prose", "prompt": "Actions speak louder than", "instructions": "Complete the saying with its missing final word.", "answer": "words."}
+{"id": "prose-20", "kind": "prose", "prompt": "Better late than", "instructions": "Complete the saying with its missing final word.", "answer": "never."}
+{"id": "prose-21", "kind": "prose", "prompt": "Practice makes", "instructions": "Complete the saying with its missing final word.", "answer": "perfect."}
+{"id": "prose-22", "kind": "prose", "prompt": "Two heads are better than", "instructions": "Complete the saying with its missing final word.", "answer": "one."}
+{"id": "prose-23", "kind": "prose", "prompt": "When in Rome, do as the Romans", "instructions": "Complete the saying with its missing final word.", "answer": "do."}
+{"id": "prose-24", "kind": "prose", "prompt": "The pen is mightier than the", "instructions": "Complete the saying with its missing final word.", "answer": "sword."}
+{"id": "prose-25", "kind": "prose", "prompt": "Rome was not built in a", "instructions": "Complete the saying with its missing final word.", "answer": "day."}
+{"id": "prose-26", "kind": "prose", "prompt": "An apple a day keeps the doctor", "instructions": "Complete the saying with its missing final word.", "answer": "away."}
+{"id": "prose-27", "kind": "prose", "prompt": "All that glitters is not", "instructions": "Complete the saying with its missing final word.", "answer": "gold."}
+{"id": "prose-28", "kind": "prose", "prompt": "Curiosity killed the", "instructions": "Complete the saying with its missing final word.", "answer": "cat."}
+{"id": "prose-29", "kind": "prose", "prompt": "Every cloud has a silver", "instructions": "Complete the saying with its missing final word.", "answer": "lining."}
+{"id": "prose-30", "kind": "prose", "prompt": "Look before you", "instructions": "Complete the saying with its missing final word.", "answer": "leap."}
+{"id": "prose-31", "kind": "prose", "prompt": "Where there is smoke, there is", "instructions": "Complete the saying with its missing final word.", "answer": "fire."}
+{"id": "prose-32", "kind": "prose", "prompt": "Knowledge is", "instructions": "Complete the saying with its missing final word.", "answer": "power."}
+{"id": "prose-33", "kind": "prose", "prompt": "river", "instructions": "Write the word in capital letters.", "answer": "RIVER"}
+{"id": "prose-34", "kind": "prose", "prompt": "stone", "instructions": "Write the letters of the word in reverse order.", "answer": "enots"}
+{"id": "prose-35", "kind": "prose", "prompt": "one hundred", "instructions": "Write the number using digits.", "answer": "100"}
+{"id": "prose-36", "kind": "prose", "prompt": "cat", "instructions": "Translate the word into Spanish.", "answer": "gato"}
+{"id": "prose-37", "kind": "prose", "prompt": "mouse", "instructions": "Give the plural of the noun.", "answer": "mice"}
+{"id": "prose-38", "kind": "prose", "prompt": "run", "instructions": "Give the past tense of the verb.", "answer": "ran"}
+{"id": "prose-39", "kind": "prose", "prompt": "blue and yellow", "instructions": "Name the color made by mixing the two paints.", "answer": "green"}
+{"id": "prose-40", "kind": "prose", "prompt": "125 + 100", "instructions": "Add the two numbers and give only the result.", "answer": "225"}
+{"id": "prose-41", "kind": "prose", "prompt": "early", "instructions": "Give the opposite of the word.", "answer": "late"}
+{"id": "prose-42", "kind": "prose", "prompt": "garden", "instructions": "Give only the first three letters of the word.", "answer": "gar"}
+{"id": "prose-43", "kind": "prose", "prompt": "SUNLIGHT", "instructions": "Write the word in lowercase letters.", "answer": "sunlight"}
+{"id": "prose-44", "kind": "prose", "prompt": "Tuesday", "instructions": "Name the day of the week that follows.", "answer": "Wednesday"}
+{"id": "prose-45", "kind": "prose", "prompt": "March", "instructions": "Name the month that follows.", "answer": "April"}
+{"id": "prose-46", "kind": "prose", "prompt": "planet", "instructions": "Count the letters in the word and answer in words.", "answer": "six"}
+{"id": "prose-47", "kind": "prose", "prompt": "sun flower", "instructions": "Join the two words into one word.", "answer": "sunflower"}
+{"id": "prose-48", "kind": "prose", "prompt": "child", "instructions": "Give the plural of the noun.", "answer": "children"}
+{"id": "multi-turn-01", "kind": "multi-turn", "prompt": "User: My sister's name is Priya.\nAssistant: That is a lovely name.\nUser: We are planning a trip together next summer, maybe to the coast. What is my sister's name?", "instructions": "Answer the user's last question in a few words.", "answer": "Priya.", "fact": "Priya", "pair": "pair-01"}
+{"id": "multi-turn-02", "kind": "multi-turn", "prompt": "User: I parked the car on level 5.\nAssistant: Noted, level 5.\nUser: The meeting ran late and I am very tired now. Which level did I park the car on?", "instructions": "Answer the user's last question in a few words.", "answer": "Level 5.", "fact": "level 5", "pair": "pair-02"}
+{"id": "multi-turn-03", "kind": "multi-turn", "prompt": "User: My favorite fruit is mango.\nAssistant: Mangoes are sweet.\nUser: I also like walking in the park on weekends with friends. What is my favorite fruit?", "instructions": "Answer the user's last question in a few words.", "answer": "Mango.", "fact": "mango", "pair": "pair-03"}
+{"id": "multi-turn-04", "kind": "multi-turn", "prompt": "User: The door code is 4817.\nAssistant: I will remember it.\nUser: Thanks, I keep forgetting numbers when I am busy at work. What is the door code?", "instructions": "Answer the user's last question in a few words.", "answer": "4817.", "fact": "4817", "pair": "pair-04"}
+{"id": "multi-turn-05", "kind": "multi-turn", "prompt": "User: I was born in Lisbon.\nAssistant: Lisbon is a beautiful city.\nUser: These days I live far away and rarely visit my family there. Where was I born?", "instructions": "Answer the user's last question in a few words.", "answer": "Lisbon.", "fact": "Lisbon", "pair": "pair-05"}
+{"id": "multi-turn-06", "kind": "multi-turn", "prompt": "User: My cat is called Pepper.\nAssistant: Pepper is a fun name for a cat.\nUser: She likes to sleep in the sun near the kitchen window all day. What is my cat called?", "instructions": "Answer the user's last question in a few words.", "answer": "Pepper.", "fact": "Pepper", "pair": "pair-06"}
+{"id": "multi-turn-07", "kind": "multi-turn", "prompt": "User: Our team meets on Thursday.\nAssistant: Thursday works well.\nUser: I need to prepare slides and check the budget before then. On which day does our team meet?", "instructions": "Answer the user's last question in a few words.", "answer": "Thursday.", "fact": "Thursday", "pair": "pair-07"}
+{"id": "multi-turn-08", "kind": "multi-turn", "prompt": "User: I am learning to play the violin.\nAssistant: The violin takes patience.\nUser: I practice every evening after dinner for about thirty minutes. Which instrument am I learning?", "instructions": "Answer the user's last question in a few words.", "answer": "The violin.", "fact": "violin", "pair": "pair-08"}
+{"id": "multi-turn-09", "kind": "multi-turn", "prompt": "User: My sister's name is Elena.\nAssistant: That is a lovely name.\nUser: We are planning a trip together next summer, maybe to the coast. What is my sister's name?", "instructions": "Answer the user's last question in a few words.", "answer": "Elena.", "fact": "Elena", "pair": "pair-01"}
+{"id": "multi-turn-10", "kind": "multi-turn", "prompt": "User: I parked the car on level 2.\nAssistant: Noted, level 2.\nUser: The meeting ran late and I am very tired now. Which level did I park the car on?", "instructions": "Answer the user's last question in a few words.", "answer": "Level 2.", "fact": "level 2", "pair": "pair-02"}
+{"id": "multi-turn-11", "kind": "multi-turn", "prompt": "User: My favorite fruit is kiwi.\nAssistant: Kiwis are sweet.\nUser: I also like walking in the park on weekends with friends. What is my favorite fruit?", "instructions": "Answer the user's last question in a few words.", "answer": "Kiwi.", "fact": "kiwi", "pair": "pair-03"}
+{"id": "multi-turn-12", "kind": "multi-turn", "prompt": "User: The door code is 9052.\nAssistant: I will remember it.\nUser: Thanks, I keep forgetting numbers when I am busy at work. What is the door code?", "instructions": "Answer the user's last question in a few words.", "answer": "9052.", "fact": "9052", "pair": "pair-04"}
+{"id": "multi-turn-13", "kind": "multi-turn", "prompt": "User: I was born in Oslo.\nAssistant: Oslo is a beautiful city.\nUser: These days I live far away and rarely visit my family there. Where was I born?", "instructions": "Answer the user's last question in a few words.", "answer": "Oslo.", "fact": "Oslo", "pair": "pair-05"}
+{"id": "multi-turn-14", "kind": "multi-turn", "prompt": "User: My cat is called Ginger.\nAssistant: Ginger is a fun name for a cat.\nUser: She likes to sleep in the sun near the kitchen window all day. What is my cat called?", "instructions": "Answer the user's last question in a few words.", "answer": "Ginger.", "fact": "Ginger", "pair": "pair-06"}
+{"id": "multi-turn-15", "kind": "multi-turn", "prompt": "User: Our team meets on Monday.\nAssistant: Monday works well.\nUser: I need to prepare slides and check the budget before then. On which day does our team meet?", "instructions": "Answer the user's last question in a few words.", "answer": "Monday.", "fact": "Monday", "pair": "pair-07"}
+{"id": "multi-turn-16", "kind": "multi-turn", "prompt": "User: I am learning to play the cello.\nAssistant: The cello takes patience.\nUser: I practice every evening after dinner for about thirty minutes. Which instrument am I learning?", "instructions": "Answer the user's last question in a few words.", "answer": "The cello.", "fact": "cello", "pair": "pair-08"}
+{"id": "code-01", "kind": "code", "prompt": "x squared", "instructions": "Return only a Python expression. No markdown.", "answer": "x*x"}
+{"id": "code-02", "kind": "code", "prompt": "twice x", "instructions": "Return only a Python expression. No markdown.", "answer": "2*x"}
+{"id": "code-03", "kind": "code", "prompt": "whether x is even", "instructions": "Return only a Python expression. No markdown.", "answer": "x%2==0"}
+{"id": "code-04", "kind": "code", "prompt": "the absolute value of x", "instructions": "Return only a Python expression. No markdown.", "answer": "abs(x)"}
+{"id": "code-05", "kind": "code", "prompt": "the length of s", "instructions": "Return only a Python expression. No markdown.", "answer": "len(s)"}
+{"id": "code-06", "kind": "code", "prompt": "the last item of xs", "instructions": "Return only a Python expression. No markdown.", "answer": "xs[-1]"}
+{"id": "code-07", "kind": "code", "prompt": "s in upper case", "instructions": "Return only a Python expression. No markdown.", "answer": "s.upper()"}
+{"id": "code-08", "kind": "code", "prompt": "the sum of xs", "instructions": "Return only a Python expression. No markdown.", "answer": "sum(xs)"}

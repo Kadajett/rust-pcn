@@ -1,225 +1,75 @@
-# PCN Architecture
+# River Song Predictive Coding Architecture
 
-## The Problem with Backpropagation
+## Network dynamics
 
-Backpropagation works by computing a global loss at the output, then sending error gradients backward through every layer. This requires two things that biological brains cannot do:
+Layers are indexed from input `0` to output `L`. A generative matrix `W[l]` has shape `(d[l-1], d[l])` and predicts the layer below:
 
-1. **Separate phases.** The network must freeze its forward activity, run a full backward pass, then update all weights simultaneously. Brains process information and learn at the same time.
+`mu[l-1] = W[l] tanh(x[l]) + b[l-1]`
 
-2. **Global coordination.** Every neuron must wait for downstream neurons to finish computing their gradients before it can update. Brains have no central controller orchestrating this sequence.
+`epsilon[l-1] = x[l-1] - mu[l-1]`
 
-Predictive Coding Networks solve both problems. Every neuron updates itself based on locally available information, and computation and learning happen in parallel.
+The energy is `E = 0.5 * sum_l ||epsilon[l]||^2`. A relaxation step updates every non-input state using only adjacent prediction errors:
 
-## The Core Idea
+`x[l] += alpha * (-epsilon[l] + W[l]^T epsilon[l-1] * tanh'(x[l]))`
 
-A PCN treats the network as an energy minimization system. Each layer generates a **prediction** of the layer below it. The difference between prediction and reality is the **prediction error**. The network's total energy is the sum of squared prediction errors across all layers. Inference and learning both work by reducing this energy.
+Training initializes states bottom-up, clamps the normalized structured input, maps each independent Noul target from `[0,1]` to `[-1,1]`, clamps that output during every relaxation step when `clamp_output` is enabled, then applies the local batch-averaged rule:
 
-## Two Populations Per Layer
+`Delta W[l] = eta * epsilon[l-1]^T tanh(x[l]) / batch`
 
-Each layer l has two types of neurons:
+`Delta b[l-1] = eta * mean_batch(epsilon[l-1])`
 
-- **State neurons** `x[l]`: the layer's current activity values.
-- **Error neurons** `eps[l]`: the difference between what the layer above predicted and what actually happened.
+SEAL (Surprise-gated Exponential-Average Learning) optionally multiplies each layer's local rate by a bounded surprise factor derived from an error-magnitude EMA. No backward graph, global loss gradient, or optimizer state exists.
 
-The error at layer l-1 is computed locally:
+Inference and evaluation use the same bottom-up initialization and iterative relaxation but clamp only the input. Settled output states are independently converted to probabilities with `(x + 1) / 2` and clamped to `[0,1]`; there is no softmax or argmax accuracy.
 
-```
-eps[l-1] = x[l-1] - mu[l-1]
-```
+## Production shapes and memory
 
-Where `mu[l-1]` is the **top-down prediction** from layer l:
+The retained controller foundation is `512 -> 9216 -> 9216 -> 3`. River v4 widens that checkpoint to `544 -> 9216 -> 9216 -> 516`; River v5 preserves it inside `576 -> 9216 -> 9216 -> 5386`. The v5 matrices contain roughly 139.9 million `f32` parameters and occupy about 534 MiB. CPU NdArray uses the same equations for deterministic tests and smoke runs. CUDA uses explicit Burn tensors and local updates without autograd.
 
-```
-mu[l-1] = W[l] * f(x[l]) + b[l-1]
-```
+## Version-4 multimodal descendant
 
-Here `W[l]` is the weight matrix connecting layer l to layer l-1 (it predicts downward), `f` is the activation function, and `b[l-1]` is a bias vector.
+The live `v0.1` controller remains format version 3 with shape `512 -> 9216 -> 9216 -> 3`. Multimodal work starts from an explicit format-version-4 descendant with shape `544 -> 9216 -> 9216 -> 516`; it does not reinterpret or mutate the live checkpoint.
 
-## The Energy Function
+The migration preserves the same PCN:
 
-Total prediction error energy:
+- `W1[0..512, :]`, `W2`, `W3[:, 0..3]`, and all existing bias coordinates are copied exactly.
+- Thirty-two typed sideband input rows, 256 amodal output coordinates, and 257 byte/EOS output coordinates are zero-initialized.
+- With new outputs disabled, the migrated epoch-108 base produced zero absolute Pinball output delta in the retained-control smoke scenario.
 
-```
-E = (1/2) * sum over l of ||eps[l]||^2
-```
+Text/code payloads are 64 bytes encoded into 512 bitplanes. Images are 12-by-12 RGB input patches occupying 432 sensory coordinates; padding stays unobserved. Sideband coordinates identify modality, task, valid fraction, sequence position, patch position/scale, and strict-JSON versus text mode.
 
-This is always non-negative (sum of squares). Lower energy means better predictions throughout the network.
+Masked contrastive learning uses two genuinely different phases. The positive phase clamps clean sensory input and only the selected byte or Noul target coordinates. The free phase clamps observed sensory coordinates while missing coordinates relax. The local update remains the difference between positive and free correlations. Non-Pinball batches zero the update to the three original final-layer columns; Pinball anchor batches zero updates to all new final-layer columns. The shared lower matrices remain plastic in both cases, so retained-control evaluation and anchor rehearsal are required.
 
-## State Dynamics (Relaxation)
+The byte head emits text directly or supplies semantic choices to a schema-guided JSON constructor. Prose/code windows use Text mode; structured response records use StrictJson mode. EOS is supervised at complete response/document boundaries, never at capped reads or arbitrary 64-byte window boundaries. Structured decoding scores the entire canonical prompt plus emitted JSON while counting and parsing only emitted bytes against the output limit. The original v4 image objective is input-only; the v5 descendant adds paired label text. Persistent inference reuses settled hidden/output state while assimilating subsequent byte windows, allowing an image observation to condition later JSON bytes without introducing another model.
 
-States evolve by gradient descent on the energy. For each internal layer l (not input, not output):
+## Version-5 task-aware universal descendant
 
-```
-x[l] += alpha * (-eps[l] + W[l]^T * eps[l-1] * f'(x[l]))
-```
+The v5 output layout retains all 516 v4 outputs, then reserves one request-conditioned Noul, four typed controls, 768 persistent latent values, and 4,097 token supports. Task batches update only appended request-input rows and explicitly selected appended output columns. The inherited input rows, middle matrix, biases, Pinball columns, amodal outputs, and byte head remain bit-identical during these updates.
 
-Where `alpha` is the step size and `f'` is the activation derivative.
+The registry routes `typed-decision` and `typed-decision-soft-label` records through a task adapter instead of the prose-byte fallback. State and question form the sensory observation. Shared record metadata retains candidate identity, criterion, ordinal, and soft probability across candidate rows. Explicit candidate criteria take precedence; Choice label/description records are parsed separately, Score identities are ordinal indices with level descriptions as criteria, and Noul preserves its true/false criteria. Training and inference build the same candidate-conditioned request. One record in twenty is deterministically excluded from task losses. A fixed, evenly distributed subset supplies Brier and rank-accuracy promotion gates, plus per-output-type NLL, target probability, candidate Brier, and Score MAE diagnostics.
 
-Two forces compete in this update:
+Instruction-response, conversation, grounded-QA, reasoning, code-instruction, and structured-function-calling records supervise only response bytes and EOS. Training and inference share the canonical `prompt + optional instructions + "\nResponse: "` prefix. Each example combines the 64-byte inherited sensory window with a stable full-prefix request sketch, clamps the next byte in the reserved token supports, and clamps a 768-value rolling prefix sketch in the persistent latent range. Stateful inference preserves settled hidden/output state between emitted bytes. Runtime token selection requires the explicit sequence promotion flag, not merely nonzero trained weights.
 
-- `-eps[l]`: pull the neuron toward what the layer above predicted for it (align with top-down prediction).
-- `W[l]^T * eps[l-1] * f'(x[l])`: adjust to reduce the prediction error at the layer below (improve bottom-up prediction).
+Active image corpora now provide a second, checkpoint-preserving image-to-text objective. A 12-by-12 RGB patch is paired with a textual class label and trains the same persistent/token path. Fixed image records are excluded from this task loss and report a separate vision-language token gate. This is initial visual grounding, not caption-level scene understanding.
 
-The neuron settles at a compromise between these two forces.
+`promotion.json` is the sole readiness signal for new task paths. It reports typed Brier/rank accuracy, instruction-response token accuracy, and vision-language token accuracy over deterministic held-out records. Training a path does not advertise it as promoted. The dashboard exposes the current gate results.
 
-**Clamping rules:**
+The dual-expert runtime routes Noul/Choice/Score to the request-conditioned PCN. Text/Structured use the inherited PCN until sequence promotion passes, then use the request-conditioned token path. Mixed requests execute both roles sequentially at a safe batch boundary, synchronize active weights before switching, merge answers, and restore the original training role and independent SEAL state. Any failed output discards the whole response's answers. Both experts reset their independent surprise histories at each stage boundary. Both retain their existing local positive/free-phase learning; there is no external learned decoder, conventional output head, or autograd path.
 
-- Input layer: always clamped to the data (`x[0] = input`).
-- Output layer: clamped to the target during supervised training (`x[L] = target`), free during inference.
+Adapter fingerprint changes invalidate prepared representations without resetting accumulated corpus exposure. Task/Noul checkpoint requests are deferred until all selected task records finish and their deferred corpus cursors are committed, so updated task weights cannot be published alongside stale cursors. Checkpoint dimensions, inherited coordinates, and durable lineage are unchanged by these contract repairs.
 
-## Weight Updates (Hebbian Learning)
+## Data path
 
-After the network settles (relaxation is complete), update weights using the local error and the presynaptic activity:
+The structured encoder preserves the 44 legacy observation/objective/proprioception values, adds typed numeric and boolean slots, and uses stable hashed categorical slots to reach exactly 512 finite values. Replay validation requires JeV mode and all three finite Noul values in `[0,1]`. Repeated telemetry is deduplicated by `(run directory, request_id)`. Complete runs, never frames, are assigned to train or validation. The append-only replay cache remains independent from model checkpoints.
 
-```
-delta_W[l] = eta * eps[l-1] outer_product f(x[l])
-delta_b[l-1] = eta * eps[l-1]
-```
+Z-score statistics are computed from training runs only. Before being clamped as PCN input state, normalized values pass through `tanh`, matching the bounded hidden-state activation. Labels remain independent continuous supports.
 
-Where `eta` is the learning rate and `outer_product` produces a matrix from two vectors.
+## Checkpoint boundary
 
-This rule resembles Hebbian plasticity: if the prediction error at layer l-1 is large and neuron x[l] is active, the connection between them strengthens. The key insight is that this rule is derived purely from energy minimization, not imposed as a biological constraint.
+PCN checkpoint format version 3 records the exact feature/label contract, architecture, activation and input transform, predictive-coding learning-rule identifier, completed epoch, relaxation/Hebbian configuration, normalization, selection/batch/yield state, and optional SEAL EMA state. Parameters are stored in a PCN-specific binary stream. Shape, count, finite-value, contract, and learning-rule checks happen at load.
 
-## Training Loop
+Format version 4 uses a separate `RIVPCN04` weight header and records both sensory and output contracts, the exact 544/516 layout, masked-relaxation controls, version-3 migration provenance, retained Pinball normalization, and per-corpus example counts plus manifest fingerprints. Version-3 and version-4 loaders are separate; neither silently upgrades the other.
 
-For each training sample:
+Format version 5 uses `RIVPCN05`, records the exact 576/5,386 layout and v4 migration lineage, and persists typed, sequence, vision-language, and promotion counters. Existing v5 checkpoints deserialize new counters as zero, so the task-aware trainer continues the exact checkpoint rather than remigrating or resetting it.
 
-1. **Initialize** internal states to zeros (or cached values from the previous sample).
-2. **Clamp** the input layer to the data. For supervised training, clamp the output layer to the target.
-3. **Relax** for T steps:
-   - Compute predictions: `mu[l-1] = W[l] * f(x[l]) + b[l-1]`
-   - Compute errors: `eps[l-1] = x[l-1] - mu[l-1]`
-   - Update internal states using the state dynamics equation above.
-4. **Update weights** using the Hebbian rule above.
-5. **Log the energy** for convergence tracking.
-
-## Activation Functions
-
-The activation function `f` determines the network's representational power.
-
-**Phase 1, Linear:** `f(x) = x`, `f'(x) = 1`. The energy function becomes quadratic, making the system analytically tractable. Useful for verifying that the algorithm is implemented correctly, but limited to linear mappings.
-
-**Phase 2, Tanh:** `f(x) = tanh(x)`, `f'(x) = 1 - tanh^2(x)`. Bounded output in [-1, 1], smooth derivative, prevents saturation. Enables learning nonlinear functions like XOR and spiral classification.
-
-**Future, Leaky ReLU:** `f(x) = max(alpha*x, x)` where alpha is small (e.g., 0.01). Fast to compute, biologically plausible for excitatory neurons, but requires the leaky variant to avoid dead neurons.
-
-## Design Choices
-
-### Symmetric vs. Separate Weights
-
-The prediction `mu[l-1] = W[l] * f(x[l])` and the feedback `W[l]^T * eps[l-1]` use the same matrix and its transpose. This is called the **symmetric weight** assumption.
-
-Biologically, forward and backward synapses are physically separate and cannot share weights instantaneously. The alternative is to maintain two separate matrices `W_down[l]` and `W_up[l]` that learn independently. Research suggests they converge to approximate symmetry through similar update rules.
-
-This project starts with symmetric weights (simpler, fewer parameters, more stable) and may switch to separate weights in Phase 4.
-
-### Fixed vs. Energy-Based Stopping
-
-**Fixed T:** Run relaxation for a predetermined number of steps (20-50). Simple and predictable, but may over-relax easy inputs or under-relax hard ones.
-
-**Energy-based stopping:** Stop when the energy change between steps falls below a threshold. Adaptive and efficient, but requires tuning the threshold to avoid premature termination.
-
-Phase 1 uses fixed T. Phase 2 added convergence-based stopping via `relax_with_convergence()`.
-
-### Weight Initialization
-
-Weights: uniform random in [-0.05, 0.05]. Small values prevent symmetry breaking and keep initial energy manageable. Deeper networks or ReLU activations may require Xavier or He initialization.
-
-Biases: zeros.
-States: zeros (or a fast feedforward pass for warm-starting).
-
-## Locality and Parallelism
-
-Each neuron's update depends only on:
-
-1. Its own state `x[l]`
-2. Its own error `eps[l]`
-3. The error from the layer below `eps[l-1]`
-4. The weight matrix `W[l]` connecting it to layer l-1
-
-No layer needs to wait for any other layer to finish. States can update in any order and still converge to the same equilibrium. This makes PCNs a natural fit for both data parallelism (batch across samples) and model parallelism (pipeline layers independently).
-
-## PCN vs. Backpropagation
-
-| Property | Backpropagation | PCN |
-|----------|----------------|-----|
-| Phases | Separate forward/backward | Unified, continuous |
-| Coordination | Global synchronization | Local, autonomous neurons |
-| Learning signal | Global loss gradient | Local prediction errors |
-| Parallelism | Limited (layer-sequential) | Massively parallel |
-| Biological plausibility | Low | High |
-| Compute cost | ~2 forward passes | ~T forward passes (T = 20-100) |
-
-The tradeoff: PCNs require more computation per sample (T relaxation steps vs. 2 passes), but each step is local and parallelizable. For problems where parallelism is cheap and global synchronization is expensive, PCNs can win.
-
-## Rust Implementation
-
-### Core Structs
-
-```rust
-pub struct PCN {
-    dims: Vec<usize>,          // Layer dimensions [d0, d1, ..., dL]
-    w: Vec<Array2<f32>>,       // w[l]: (d_{l-1}, d_l) weight matrix
-    b: Vec<Array1<f32>>,       // b[l-1]: (d_{l-1}) bias vector
-    activation: Box<dyn Activation>,
-}
-
-pub struct State {
-    x: Vec<Array1<f32>>,       // x[l]: activations
-    mu: Vec<Array1<f32>>,      // mu[l]: predictions
-    eps: Vec<Array1<f32>>,     // eps[l]: errors
-}
-
-pub struct BatchState {
-    x: Vec<Array2<f32>>,       // x[l]: (batch_size, d_l) activations
-    mu: Vec<Array2<f32>>,      // mu[l]: (batch_size, d_l) predictions
-    eps: Vec<Array2<f32>>,     // eps[l]: (batch_size, d_l) errors
-    batch_size: usize,
-}
-```
-
-### Key Methods
-
-```rust
-impl PCN {
-    pub fn new(dims: Vec<usize>) -> Self;
-    pub fn compute_errors(&self, state: &mut State) -> PCNResult<()>;
-    pub fn relax_step(&self, state: &mut State, alpha: f32) -> PCNResult<()>;
-    pub fn relax(&self, state: &mut State, steps: usize, alpha: f32) -> PCNResult<()>;
-    pub fn relax_with_convergence(&self, state: &mut State, ...) -> PCNResult<usize>;
-    pub fn update_weights(&mut self, state: &State, eta: f32) -> PCNResult<()>;
-    pub fn compute_energy(&self, state: &State) -> f32;
-
-    // Batch variants (Phase 3)
-    pub fn compute_batch_errors(&self, state: &mut BatchState) -> PCNResult<()>;
-    pub fn relax_batch_step(&self, state: &mut BatchState, alpha: f32) -> PCNResult<()>;
-    pub fn update_batch_weights(&mut self, state: &BatchState, eta: f32) -> PCNResult<()>;
-}
-```
-
-## Dataset Strategy
-
-All training uses local datasets from `/bulk-storage/localdocs/`. No pre-trained models.
-
-**Phase 1-2 toy problems:**
-- XOR (2 inputs, 1 output): verifies nonlinear learning capacity.
-- 2D spiral: tests complex decision boundaries.
-- MNIST: benchmark classification task.
-
-**Data pipeline:** load, shuffle, normalize to [0, 1] or [-1, 1] depending on activation, split into mini-batches.
-
-## Metrics
-
-Track during training:
-
-- **Energy:** total prediction error (should decrease over epochs).
-- **Accuracy:** classification rate on a validation set.
-- **Layer-wise error:** error magnitude per layer (diagnostic for finding misbehaving layers).
-- **Weight norm:** L2 norm of weight matrices (detect divergence early).
-
-## References
-
-1. Rao, R. P. N., & Ballard, D. H. (1999). "Predictive coding in the visual cortex." *Nature Neuroscience*, 2(1), 79-87.
-2. Whittington, J. C., & Bogacz, R. (2017). "An Approximation of the Error Backpropagation Algorithm in a Predictive Coding Network with Local Hebbian Synaptic Plasticity." *Neural Computation*, 29(5), 1229-1262.
-3. Millidge, B., et al. (2022). "Predictive Coding: Towards a Future of Deep Learning beyond Backpropagation?" *IJCAI 2022*.
-4. Salvatori, T., et al. (2023). "Predictive Coding Networks and Inference Learning." *ICLR 2023*.
+Adam/MLP checkpoints cannot be resumed or relabeled as PCN. The explicit one-time importer for the known version-1 44-feature model copies only compatible matrices, expands the first matrix with zero rows, zeroes PCN biases, discards Adam and MLP biases, sets epoch zero, records import provenance, and writes a new format-v3 checkpoint. Otherwise training starts fresh.

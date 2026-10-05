@@ -16,8 +16,14 @@ UNITS=$HOME/.config/systemd/user
 for unit in river-song-portal.service river-capability-eval.service river-live-prose-probe.service; do
     [ -f "$UNITS/$unit" ] || continue
     sed -i -E "s#$RUNS/(current|b200)#$TARGET#g" "$UNITS/$unit"
-    if [ "$unit" = river-live-prose-probe.service ] && ! grep -q -- '--telemetry ' "$UNITS/$unit"; then
+    if [ "$unit" = river-live-prose-probe.service ]; then
+        # The probe appends its rows next to the telemetry; on a bridge mirror that file is rewritten from the remote,
+        # so the rows go to a sidecar the portal merges (samples.local.jsonl).
+        sed -i -E "s# --samples-file [^ ]+##; s#(live_prose_probe.py )(--telemetry [^ ]+ )?#\1#" "$UNITS/$unit"
         sed -i -E "s#(live_prose_probe.py )#\1--telemetry $TARGET #" "$UNITS/$unit"
+        if [ "$1" = b200 ]; then
+            sed -i -E "s#(--telemetry $TARGET )#\1--samples-file $TARGET/samples.local.jsonl #" "$UNITS/$unit"
+        fi
     fi
 done
 systemctl --user daemon-reload

@@ -49,6 +49,9 @@ def main() -> None:
     parser.add_argument("--telemetry", type=Path, default=Path("/bulk-storage/connectome-merc/river-multimodal-runs/current"))
     parser.add_argument("--interval", type=float, default=360.0)
     parser.add_argument("--max-bytes", type=int, default=32)
+    parser.add_argument("--samples-file", type=Path,
+                        help="where to append the probe rows (default <telemetry>/samples.jsonl; use a sidecar file "
+                             "when the telemetry dir is a bridge mirror, whose samples.jsonl is overwritten remotely)")
     args = parser.parse_args()
     items = [item for item in map(json.loads, FIT.read_text().splitlines()) if item["kind"] == "prose"]
     index = int(time.time() // args.interval) % len(items)
@@ -83,7 +86,7 @@ def main() -> None:
                 "batch": state.get("batch"), "epoch": state.get("epoch"),
                 "evaluated_at_unix_ms": int(time.time() * 1000),
             }
-            with (args.telemetry / "samples.jsonl").open("a") as stream:
+            with (args.samples_file or args.telemetry / "samples.jsonl").open("a") as stream:
                 stream.write(json.dumps(sample, separators=(",", ":")) + "\n")
             print(f"{item['id']}: {actual!r}", flush=True)
         else:

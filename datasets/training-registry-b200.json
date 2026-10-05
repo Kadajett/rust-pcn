@@ -212,84 +212,6 @@
       "prepared_training_windows": 14260
     },
     {
-      "id": "openassistant-oasst2-v1",
-      "source": "https://huggingface.co/datasets/OpenAssistant/oasst2",
-      "revision": "179dd21fc55192153d94adb0e0ce8f69e222bf75",
-      "kind": "conversation-ranked",
-      "language": [
-        "en",
-        "multilingual"
-      ],
-      "features": [
-        "message_id",
-        "parent_id",
-        "text",
-        "role",
-        "lang",
-        "rank",
-        "labels"
-      ],
-      "splits": {
-        "train": 128575,
-        "validation": 6599
-      },
-      "download_bytes": 66674129,
-      "license": "apache-2.0",
-      "status": "queued-adapter",
-      "priority": "high",
-      "introduced_stage": null,
-      "notes": "Reconstruct reviewed prompt-to-leaf paths; use rank/labels for Choice and Score targets; exclude deleted or failed-review messages."
-    },
-    {
-      "id": "rajpurkar-squad-v2-v1",
-      "source": "https://huggingface.co/datasets/rajpurkar/squad_v2",
-      "revision": "3ffb306f725f7d2ce8394bc1873b24868140c412",
-      "kind": "grounded-question-answering",
-      "language": "en",
-      "features": [
-        "title",
-        "context",
-        "question",
-        "answers"
-      ],
-      "splits": {
-        "train": 130319,
-        "validation": 11873
-      },
-      "download_bytes": 17720493,
-      "license": "cc-by-sa-4.0",
-      "status": "queued-attribution-review",
-      "priority": "high",
-      "introduced_stage": null,
-      "notes": "Grounded answer generation plus explicit unanswerable examples for confidence and abstention."
-    },
-    {
-      "id": "hotpotqa-distractor-v1",
-      "source": "https://huggingface.co/datasets/hotpotqa/hotpot_qa",
-      "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
-      "config": "distractor",
-      "kind": "multi-hop-grounded-question-answering",
-      "language": "en",
-      "features": [
-        "question",
-        "answer",
-        "type",
-        "level",
-        "supporting_facts",
-        "context"
-      ],
-      "splits": {
-        "train": 90447,
-        "validation": 7405
-      },
-      "download_bytes": 359239231,
-      "license": "cc-by-sa-4.0",
-      "status": "queued-attribution-review",
-      "priority": "high",
-      "introduced_stage": null,
-      "notes": "Use the distractor configuration only; supporting facts provide explicit distant-evidence supervision for the 512-token continuation target."
-    },
-    {
       "id": "salesforce-xlam-function-calling-60k-v1",
       "source": "https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k",
       "revision": "26d14ebfe18b1f7b524bd39b404b50af5dc97866",
@@ -303,28 +225,6 @@
       "priority": "high",
       "introduced_stage": null,
       "notes": "Requires Hugging Face access acknowledgment. Compile functions and calls into schema-conditioned structured-output examples."
-    },
-    {
-      "id": "openai-gsm8k-main-v1",
-      "source": "https://huggingface.co/datasets/openai/gsm8k",
-      "revision": "740312add88f781978c0658806c59bc2815b9866",
-      "config": "main",
-      "kind": "reasoning-question-answering",
-      "language": "en",
-      "features": [
-        "question",
-        "answer"
-      ],
-      "splits": {
-        "train": 7473,
-        "test": 1319
-      },
-      "download_bytes": 2725633,
-      "license": "mit",
-      "status": "queued-adapter",
-      "priority": "high",
-      "introduced_stage": null,
-      "notes": "Reserve the official test split; extract final numeric answers separately from rationale text."
     },
     {
       "id": "allenai-ai2-arc-v1",
@@ -440,35 +340,163 @@
       "notes": "Evaluation only after license confirmation; do not use benchmark examples for weight training or tokenizer fitting."
     },
     {
+      "id": "openassistant-oasst2-v1",
+      "source": "https://huggingface.co/datasets/OpenAssistant/oasst2",
+      "revision": "179dd21fc55192153d94adb0e0ce8f69e222bf75",
+      "kind": "conversation-ranked",
+      "language": [
+        "en",
+        "multilingual"
+      ],
+      "features": [
+        "message_id",
+        "parent_id",
+        "text",
+        "role",
+        "lang",
+        "rank",
+        "labels"
+      ],
+      "splits": {
+        "train": 128575,
+        "validation": 6599
+      },
+      "download_bytes": 66674129,
+      "license": "apache-2.0",
+      "status": "active",
+      "priority": "high",
+      "introduced_stage": "river-b200-hf-20261005",
+      "notes": "Reconstruct reviewed prompt-to-leaf paths; use rank/labels for Choice and Score targets; exclude deleted or failed-review messages.",
+      "prepared_path": "/fast-storage/river-datasets/openassistant-oasst2-v1",
+      "prepared_records": 30775,
+      "prepared_bytes": 38762450,
+      "prepared_training_windows": 29236
+    },
+    {
+      "id": "rajpurkar-squad-v2-v1",
+      "source": "https://huggingface.co/datasets/rajpurkar/squad_v2",
+      "revision": "3ffb306f725f7d2ce8394bc1873b24868140c412",
+      "kind": "grounded-question-answering",
+      "language": "en",
+      "features": [
+        "title",
+        "context",
+        "question",
+        "answers"
+      ],
+      "splits": {
+        "train": 130319,
+        "validation": 11873
+      },
+      "download_bytes": 17720493,
+      "license": "cc-by-sa-4.0",
+      "status": "active",
+      "priority": "high",
+      "introduced_stage": "river-b200-hf-20261005",
+      "notes": "Grounded answer generation plus explicit unanswerable examples for confidence and abstention.",
+      "prepared_path": "/fast-storage/river-datasets/rajpurkar-squad-v2-v1",
+      "prepared_records": 130319,
+      "prepared_bytes": 132297840,
+      "prepared_training_windows": 123803
+    },
+    {
+      "id": "hotpotqa-distractor-v1",
+      "source": "https://huggingface.co/datasets/hotpotqa/hotpot_qa",
+      "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
+      "config": "distractor",
+      "kind": "multi-hop-grounded-question-answering",
+      "language": "en",
+      "features": [
+        "question",
+        "answer",
+        "type",
+        "level",
+        "supporting_facts",
+        "context"
+      ],
+      "splits": {
+        "train": 90447,
+        "validation": 7405
+      },
+      "download_bytes": 359239231,
+      "license": "cc-by-sa-4.0",
+      "status": "active",
+      "priority": "high",
+      "introduced_stage": "river-b200-hf-20261005",
+      "notes": "Use the distractor configuration only; supporting facts provide explicit distant-evidence supervision for the 512-token continuation target.",
+      "prepared_path": "/fast-storage/river-datasets/hotpotqa-distractor-v1",
+      "prepared_records": 90447,
+      "prepared_bytes": 580963370,
+      "prepared_training_windows": 85924
+    },
+    {
+      "id": "openai-gsm8k-main-v1",
+      "source": "https://huggingface.co/datasets/openai/gsm8k",
+      "revision": "740312add88f781978c0658806c59bc2815b9866",
+      "config": "main",
+      "kind": "reasoning-question-answering",
+      "language": "en",
+      "features": [
+        "question",
+        "answer"
+      ],
+      "splits": {
+        "train": 7473,
+        "test": 1319
+      },
+      "download_bytes": 2725633,
+      "license": "mit",
+      "status": "active",
+      "priority": "high",
+      "introduced_stage": "river-b200-hf-20261005",
+      "notes": "Reserve the official test split; extract final numeric answers separately from rationale text.",
+      "prepared_path": "/fast-storage/river-datasets/openai-gsm8k-main-v1",
+      "prepared_records": 7473,
+      "prepared_bytes": 4777759,
+      "prepared_training_windows": 7099
+    },
+    {
       "id": "tinystories-v1",
       "source": "/bulk-storage/datasets/hf-text/tinystories-v1",
       "kind": "text",
-      "status": "queued-download",
       "hf_source": "https://huggingface.co/datasets/roneneldan/TinyStories",
+      "downloaded_text_bytes": 1926442915,
+      "downloaded_documents": 2141479,
+      "provenance_path": "/home/ubuntu/hf-cache/b200-fetch/results/tinystories-v1.json",
       "config": "default",
+      "status": "active",
+      "revision": "f54c09fd23315a6f9c86f9dc80f725de7d8f9c64",
       "license": "CDLA-Sharing-1.0",
-      "introduced_stage": null
+      "introduced_stage": "river-b200-hf-20261005"
     },
     {
       "id": "fineweb-edu-sample-10bt-v1",
       "source": "/bulk-storage/datasets/hf-text/fineweb-edu-sample-10bt-v1",
       "kind": "text",
-      "status": "queued-download",
       "hf_source": "https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu",
+      "downloaded_text_bytes": 8000003636,
+      "downloaded_documents": 1676042,
+      "provenance_path": "/home/ubuntu/hf-cache/b200-fetch/results/fineweb-edu-sample-10bt-v1.json",
       "config": "sample-10BT",
+      "status": "active",
+      "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
       "license": "ODC-By",
-      "introduced_stage": null
+      "introduced_stage": "river-b200-hf-20261005"
     },
     {
       "id": "wikipedia-20231101-en-v1",
       "source": "/bulk-storage/datasets/hf-text/wikipedia-20231101-en-v1",
       "kind": "text",
-      "status": "queued-download",
       "hf_source": "https://huggingface.co/datasets/wikimedia/wikipedia",
+      "downloaded_text_bytes": 4000005618,
+      "downloaded_documents": 1198566,
+      "provenance_path": "/home/ubuntu/hf-cache/b200-fetch/results/wikipedia-20231101-en-v1.json",
       "config": "20231101.en",
+      "status": "active",
+      "revision": "b04c8d1ceb2f5cd4588862100d08de323dccfbaa",
       "license": "CC-BY-SA",
-      "introduced_stage": null
+      "introduced_stage": "river-b200-hf-20261005"
     }
   ],
-  "notes": "Prose-focus copy for the fresh run (2026-10-02): only books, localDocs and Dolly instruction-response are active. B200 copy: only completed Hugging Face acquisitions are additionally active; unfinished raw sources remain queued without invented counts. Base source order and all other entries are preserved."
+  "notes": "B200 run (2026-10-05): prose-focus base (books, localDocs, Dolly active; images/code/typed-decision/pinball paused) plus seven Hugging Face datasets fetched and prepared on the B200: oasst2, SQuAD v2, HotpotQA, GSM8K (prepared via prepare_river_datasets.py adapters) and TinyStories, FineWeb-Edu (8 GB cap), Wikipedia 20231101.en (4 GB cap) as raw text split into <=8 MiB files so the loader's per-file cap reaches every byte."
 }

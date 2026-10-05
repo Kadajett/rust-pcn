@@ -1015,24 +1015,29 @@ class PortalHandler(BaseHTTPRequestHandler):
         except ValueError:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": "limit must be an integer"})
             return
-        path = self.server.telemetry / "samples.jsonl"
-        try:
-            with path.open("rb") as stream:
-                size = stream.seek(0, 2)
-                stream.seek(max(0, size - 1024 * 1024))
-                if stream.tell():
-                    stream.readline()
-                lines = stream.readlines()[-limit:]
-        except FileNotFoundError:
-            lines = []
+        # samples.jsonl may be a bridge mirror of a remote trainer (rewritten from the remote copy), so local helpers
+        # append their rows to samples.local.jsonl instead; both are merged here in time order.
         samples = []
-        for line in lines:
+        for name in ("samples.jsonl", "samples.local.jsonl"):
+            path = self.server.telemetry / name
             try:
-                sample = json.loads(line)
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                with path.open("rb") as stream:
+                    size = stream.seek(0, 2)
+                    stream.seek(max(0, size - 1024 * 1024))
+                    if stream.tell():
+                        stream.readline()
+                    lines = stream.readlines()[-limit:]
+            except FileNotFoundError:
                 continue
-            if isinstance(sample, dict):
-                samples.append(sample)
+            for line in lines:
+                try:
+                    sample = json.loads(line)
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                if isinstance(sample, dict):
+                    samples.append(sample)
+        samples.sort(key=lambda sample: (sample.get("unix_millis") or sample.get("evaluated_at_unix_ms") or 0))
+        samples = samples[-limit:]
         self.send_json(
             HTTPStatus.OK,
             {"samples": samples, "server_unix_millis": int(time.time() * 1000)},

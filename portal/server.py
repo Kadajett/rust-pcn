@@ -128,6 +128,8 @@ class PortalHandler(BaseHTTPRequestHandler):
             "/docs/outputs.html": ("docs/outputs.html", "text/html; charset=utf-8"),
             "/docs/paper": ("docs/paper.html", "text/html; charset=utf-8"),
             "/docs/paper.html": ("docs/paper.html", "text/html; charset=utf-8"),
+            "/docs/research": ("docs/research.html", "text/html; charset=utf-8"),
+            "/docs/research.html": ("docs/research.html", "text/html; charset=utf-8"),
             "/docs/docs.css": ("docs/docs.css", "text/css; charset=utf-8"),
         }
         item = static.get(route)

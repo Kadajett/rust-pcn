@@ -2,6 +2,10 @@
 
 **River** is the predictive-coding base and lineage. **Song** is the general-use model built on that base with the project’s custom SEAL learning methods. The combined public name is **River Song v0.1**; internal model/checkpoint lineages v1 through v10 remain within that public release. Song accepts caller-selected outputs spanning Noul, Choice, Score, schema-constrained structure, natural-language prose, paragraphs, explanations, and code. Pokémon Pinball is one training and evaluation family, not the model’s identity.
 
+## Current run and research
+
+Run v8 started from fresh weights on October 4, 2026 and trains prose only. Its generated answers are visible in the "Expected vs actual" panel at https://river-song.yougotserved.dev/, and the docs site is at https://river-song.yougotserved.dev/docs/. On October 5 the answers had become more word-like but none was correct; [docs/research/plateau-2026-10-05](docs/research/plateau-2026-10-05/README.md) summarizes why, with the two full research reports beside it.
+
 ## Internal version-3 foundation
 
 The production architecture is fixed at `512 -> 9216 -> 9216 -> 3`. The 512 finite structured inputs come from the versioned JeV encoder. Training-run statistics z-score each feature and `tanh` bounds the clamped input state. The three labels are independent values in `[0,1]`, ordered:

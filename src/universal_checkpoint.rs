@@ -862,7 +862,7 @@ fn io_error(path: &Path, source: std::io::Error) -> UniversalCheckpointError {
     }
 }
 
-pub(crate) fn parameter_count(dimensions: &[usize]) -> usize {
+pub fn parameter_count(dimensions: &[usize]) -> usize {
     dimensions
         .windows(2)
         .map(|pair| pair[0] * pair[1] + pair[0])

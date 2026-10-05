@@ -22,10 +22,10 @@ from typing import Any, Iterator
 TARGETS = {
     "tinystories-v1": ("roneneldan/TinyStories", "default", "CDLA-Sharing-1.0", None),
     "fineweb-edu-sample-10bt-v1": (
-        "HuggingFaceFW/fineweb-edu", "sample-10BT", "ODC-By", 20_000_000_000
+        "HuggingFaceFW/fineweb-edu", "sample-10BT", "ODC-By", 8_000_000_000
     ),
     "wikipedia-20231101-en-v1": (
-        "wikimedia/wikipedia", "20231101.en", "CC-BY-SA", 10_000_000_000
+        "wikimedia/wikipedia", "20231101.en", "CC-BY-SA", 4_000_000_000
     ),
 }
 SHARD_BYTES = 128 * 1024 * 1024

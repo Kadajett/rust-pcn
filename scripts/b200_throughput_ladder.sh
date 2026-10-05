@@ -15,7 +15,9 @@
 #   --source-root   Transferred checkpoint root (experts.json + active generation + replay-cache). Read only; passed
 #                   to the widen tool as --root. A (path,size,mtime) fingerprint of the whole tree is taken before and
 #                   after every widen and the ladder aborts if it changed.
-#   --widths        Comma list of hidden widths W (outer loop).            --batch-sizes  Comma list of B (inner loop).
+#   --widths        Comma list of hidden widths W (outer loop). A W equal to the source root's own width (9216 today)
+#                   is a control trial: the root is hard-linked into <scratch>/widen-W without widening.
+#                   --batch-sizes  Comma list of B (inner loop).
 #   --batches       Measured batches per trial (after warmup).             --warmup-batches  Batches excluded (default 3).
 #   --scratch       Scratch dir: widen-W/ (kept), trial-W-B/ (deleted unless --keep-trials), telemetry-W-B/ (fresh per
 #                   trial), replay-cache-valid/ (see --replay-cache), ladder-W-B.log, gpu-W-B.csv, widen-W.json,
@@ -306,10 +308,26 @@ print("%d %g %.4f" % (ref, effective, effective * 32 * size / ref))
 PY
 }
 
-widen() {  # W -> widened root path (stdout)
+source_hidden_width() {  # hidden width of the source root's active generation (dims[1] of its inherited checkpoint)
+    python3 - "$SOURCE_ROOT" <<'PY'
+import json, sys
+root = sys.argv[1]
+manifest = json.load(open(f"{root}/experts.json"))
+dims = manifest.get("dimensions") or json.load(open(f"{root}/{manifest['experts'][0]['checkpoint']}/checkpoint.json"))["dimensions"]
+print(dims[1])
+PY
+}
+
+widen() {  # W -> widened root path (stdout); W equal to the source width = control trial, no widening
     local width=$1 root="$SCRATCH/widen-$1"
     if [ -f "$root/experts.json" ]; then
         log "widen-$width exists, skipping widen" >&2
+        echo "$root"; return
+    fi
+    if [ "$width" = "$(source_hidden_width)" ]; then
+        log "control: hidden $width equals the source width; hard-linking $SOURCE_ROOT -> $root (no widen)" >&2
+        make_trial_root "$SOURCE_ROOT" "$root"
+        [ ! -d "$SOURCE_ROOT/replay-cache" ] || cp -a "$SOURCE_ROOT/replay-cache" "$root/replay-cache"
         echo "$root"; return
     fi
     local before after

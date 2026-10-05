@@ -251,7 +251,7 @@ function setState(state) {
   const releaseName = state.public_release || 'River Song v0.1';
   $('status').textContent = status;
   $('phaseLabel').textContent = `${releaseName} · ${state.detail || status}`;
-  $('runName').textContent = releaseName;
+  $('runName').textContent = state.run || releaseName;
   const active = ['training', 'training tasks', 'checkpointing', 'loading corpora', 'loading_corpora', 'stage exhausted'].includes(status);
   $('connectionDot').className = `dot ${active ? 'live' : state.status === 'failed' || state.status === 'safety_stop' ? 'error' : ''}`;
 

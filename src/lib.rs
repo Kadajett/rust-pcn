@@ -119,7 +119,7 @@ pub use universal::{
 };
 pub use universal_checkpoint::{
     fresh_init_expert_seeds, fresh_universal_initialization, fresh_universal_parameters,
-    load_universal_checkpoint, migrate_v4_checkpoint, migrate_v4_parameters,
+    load_universal_checkpoint, migrate_v4_checkpoint, migrate_v4_parameters, parameter_count,
     probe_zero_disabled_parity, restore_appended_paths_from_donor, save_universal_checkpoint,
     universal_input_layout, GenericNoulTrainingState, InheritedParityProbe, LoadedUniversalCheckpoint,
     UniversalBytePredictionState, UniversalByteTargetActivation, UniversalCheckpointError, UniversalCheckpointMetadata,

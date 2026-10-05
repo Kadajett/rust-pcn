@@ -42,10 +42,10 @@ use pcn::{
     RollbackRecord, RunHealthRecord, RuntimeRequestV1, RuntimeResponseV1, SealConfig,
     SurpriseState, TaskSupervision,
     TaskTrainingExample, UniversalExpertRole, BASE_NAME, BYTE_CONTEXT_BYTES, BYTE_OUTPUT_OFFSET,
-    BYTE_SUPPORT_DIM, DUAL_EXPERT_PARAMETER_COUNT, GENERIC_NOUL_INDEX, LEGACY_SENSORY_DIM,
+    BYTE_SUPPORT_DIM, GENERIC_NOUL_INDEX, LEGACY_SENSORY_DIM,
     MODEL_LINEAGE, MODEL_NAME, MULTIMODAL_DIMS, MULTIMODAL_INPUT_DIM, PCN, PUBLIC_RELEASE,
     RUNTIME_CONTRACT_V1, TOKEN_SUPPORT_START, UNIVERSAL_INPUT_DIM, UNIVERSAL_OUTPUT_DIM,
-    UNIVERSAL_NOUL_PROBABILITY_CONTRACT, UNIVERSAL_PARAMETER_COUNT,
+    UNIVERSAL_NOUL_PROBABILITY_CONTRACT,
 };
 use serde_json::{json, Value};
 
@@ -547,12 +547,8 @@ fn manifest(args: &Args, metadata: &pcn::UniversalCheckpointMetadata) -> Value {
         "noul_probability_activation": metadata.noul_probability_activation,
         "architecture": {
             "expert_count": if args.dual_expert { 2 } else { 1 },
-            "parameters_per_expert": UNIVERSAL_PARAMETER_COUNT,
-            "total_parameters": if args.dual_expert {
-                DUAL_EXPERT_PARAMETER_COUNT
-            } else {
-                UNIVERSAL_PARAMETER_COUNT
-            },
+            "parameters_per_expert": pcn::parameter_count(&metadata.dimensions),
+            "total_parameters": pcn::parameter_count(&metadata.dimensions) * if args.dual_expert { 2 } else { 1 },
             "routing": if args.dual_expert {
                 "inherited_corpus_vs_request_conditioned"
             } else {
@@ -750,12 +746,8 @@ fn trainer_state(
         "mean_free_energy": progress.mean_free_energy,
         "checkpoint": args.output,
         "expert_count": if args.dual_expert { 2 } else { 1 },
-        "parameters_per_expert": UNIVERSAL_PARAMETER_COUNT,
-        "total_parameters": if args.dual_expert {
-            DUAL_EXPERT_PARAMETER_COUNT
-        } else {
-            UNIVERSAL_PARAMETER_COUNT
-        },
+        "parameters_per_expert": pcn::parameter_count(&metadata.dimensions),
+        "total_parameters": pcn::parameter_count(&metadata.dimensions) * if args.dual_expert { 2 } else { 1 },
         "alpha": metadata.masked_pcn.alpha,
         "expert_layer_alphas": metadata.expert_layer_alphas,
         "byte_target_encoding": metadata.byte_target_encoding,

@@ -517,6 +517,7 @@ fn input_contract_state(metadata: &pcn::UniversalCheckpointMetadata) -> Value {
             "coordinates": [pcn::RECENT_BYTE_ONE_HOT_START, pcn::RECENT_BYTE_ONE_HOT_END],
         },
         "input_expansions": metadata.input_expansions,
+        "width_expansions": metadata.width_expansions,
     })
 }
 

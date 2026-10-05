@@ -1148,12 +1148,14 @@ mod tests {
             mu: vec![Tensor::zeros([2, 2], &device); 4],
             eps: vec![Tensor::ones([2, 2], &device); 4],
             tanh_x: vec![Tensor::ones([2, 2], &device); 4],
+            byte_prediction: None,
         };
         let free = GpuBatchState::<NdArray<f32>> {
             x: vec![Tensor::zeros([2, 2], &device); 4],
             mu: vec![Tensor::zeros([2, 2], &device); 4],
             eps: vec![Tensor::zeros([2, 2], &device); 4],
             tanh_x: vec![Tensor::zeros([2, 2], &device); 4],
+            byte_prediction: None,
         };
         let scales = ndarray1_to_tensor::<NdArray<f32>>(
             &Array1::from_vec(vec![3.0, 0.0]), &device,
@@ -1504,10 +1506,10 @@ mod tests {
         };
         let guard = Some(MaskedEnergyGuard { max_energy: 1.0e-9, max_relax_steps: 8 });
         // The tiny guard forces the extended settle too.
-        let (free, positive, _, _) = settle_masked_phases(&gpu, &batch, &config, guard, Some(&keep));
+        let (free, positive, _) = settle_masked_phases(&gpu, &batch, &config, guard, Some(&keep));
         assert_eq!(idle(&free), [true, true], "free");
         assert_eq!(idle(&positive), [true, true], "positive");
-        let (free, _, _, _) = settle_masked_phases(&gpu, &batch, &config, None, None);
+        let (free, _, _) = settle_masked_phases(&gpu, &batch, &config, None, None);
         assert_eq!(idle(&free), [false, false], "without a hold the units settle");
 
         let mut trained = GpuPcn::<NdArray<f32>>::from_cpu(&cpu, &NdArrayDevice::Cpu);

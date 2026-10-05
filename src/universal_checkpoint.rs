@@ -241,17 +241,108 @@ pub struct UniversalInputExpansionActivation {
     pub target_dimensions: Vec<usize>,
 }
 
+/// One additive hidden-width expansion, recorded at the exact batch it was applied:
+/// every parameter at a source coordinate is bit-identical in the target; new hidden
+/// units have zero biases and zero outgoing prediction weights (their columns in the
+/// matrix predicting the layer below), and seeded uniform incoming weights (their rows
+/// in the matrix predicting them from the layer above) of `new_unit_scale` times the
+/// target shape's Xavier limit. Input and output widths never change.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UniversalWidthExpansionActivation {
+    pub scheme: String,
+    pub activated_at_batch: u64,
+    pub activated_at_epoch: usize,
+    pub source_dimensions: Vec<usize>,
+    pub target_dimensions: Vec<usize>,
+    pub seed: u64,
+    /// Ordered [inherited, request-conditioned]; always `fresh_init_expert_seeds(seed)`.
+    pub expert_seeds: [u64; 2],
+    pub new_unit_scale: f32,
+    /// Experts whose new units were seeded (`inherited` or `both`); the other expert's
+    /// new units are exact zeros.
+    pub seeded_experts: String,
+    /// Canonical path of the source generation's expert set root and its generation.
+    pub source_root: String,
+    pub source_generation: String,
+}
+
+pub const UNIVERSAL_WIDTH_EXPANSION_SCHEME: &str =
+    "seeded-uniform-incoming-zero-outgoing-zero-bias-v1";
+
+/// Hidden widths of `dimensions`: everything between the input and output layers.
+fn hidden(dimensions: &[usize]) -> &[usize] {
+    if dimensions.len() < 2 { &[] } else { &dimensions[1..dimensions.len() - 1] }
+}
+
+/// Whether `expansions` is a chain of hidden-width growths ending at `dimensions`, each
+/// step keeping the input/output widths and growing at least one hidden layer, in
+/// non-decreasing batch/epoch order no later than the checkpoint's own counters.
+pub(crate) fn width_expansions_valid(
+    expansions: &[UniversalWidthExpansionActivation],
+    dimensions: &[usize],
+    cumulative_batches: u64,
+    epoch: usize,
+) -> bool {
+    let mut previous_hidden: Option<&[usize]> = None;
+    let mut previous = (0u64, 0usize);
+    for expansion in expansions {
+        let (source, target) = (&expansion.source_dimensions, &expansion.target_dimensions);
+        if source.len() != dimensions.len()
+            || target.len() != dimensions.len()
+            || dimensions.len() < 3
+            || expansion.scheme != UNIVERSAL_WIDTH_EXPANSION_SCHEME
+            || source.first() != target.first()
+            || source.first().and_then(|input| universal_input_layout(*input)).is_none()
+            || source.last() != target.last()
+            || source.last() != dimensions.last()
+            || hidden(source).iter().zip(hidden(target)).any(|(from, to)| from > to || *from == 0)
+            || hidden(source) == hidden(target)
+            || previous_hidden.is_some_and(|hidden_widths| hidden_widths != hidden(source))
+            || expansion.expert_seeds != fresh_init_expert_seeds(expansion.seed)
+            || !expansion.new_unit_scale.is_finite()
+            || expansion.new_unit_scale < 0.0
+            || !matches!(expansion.seeded_experts.as_str(), "inherited" | "both")
+            || expansion.activated_at_batch > cumulative_batches
+            || expansion.activated_at_epoch > epoch
+            || expansion.activated_at_batch < previous.0
+            || expansion.activated_at_epoch < previous.1
+        {
+            return false;
+        }
+        previous_hidden = Some(hidden(target));
+        previous = (expansion.activated_at_batch, expansion.activated_at_epoch);
+    }
+    previous_hidden.is_none_or(|hidden_widths| hidden_widths == hidden(dimensions))
+}
+
+/// Hidden widths the checkpoint was created at: before its first width expansion.
+pub(crate) fn created_hidden<'a>(
+    expansions: &'a [UniversalWidthExpansionActivation],
+    dimensions: &'a [usize],
+) -> &'a [usize] {
+    expansions.first().map_or(hidden(dimensions), |expansion| hidden(&expansion.source_dimensions))
+}
+
 /// Whether `expansions` is a chain of recorded widths ending at `dimensions[0]`, each
 /// step growing only the input width, in non-decreasing batch/epoch order, no later
-/// than the checkpoint's own counters.
+/// than the checkpoint's own counters. An expansion's hidden widths are those of the
+/// checkpoint at the time: the creation widths, any width expansion's result, or the
+/// current widths.
 pub(crate) fn input_expansions_valid(
     expansions: &[UniversalInputExpansionActivation],
     dimensions: &[usize],
+    width_expansions: &[UniversalWidthExpansionActivation],
     cumulative_batches: u64,
     epoch: usize,
 ) -> bool {
     let Some(&stored_width) = dimensions.first() else {
         return expansions.is_empty();
+    };
+    let known_hidden = |candidate: &[usize]| {
+        candidate == hidden(dimensions)
+            || width_expansions
+                .iter()
+                .any(|expansion| candidate == hidden(&expansion.source_dimensions))
     };
     let mut width = None;
     let mut previous = (0u64, 0usize);
@@ -264,8 +355,10 @@ pub(crate) fn input_expansions_valid(
         if universal_input_layout(source).is_none()
             || universal_input_layout(target).is_none_or(|layout| expansion.contract != layout.feature_contract)
             || source >= target
-            || expansion.source_dimensions != dimensions_at_input(dimensions, source)
-            || expansion.target_dimensions != dimensions_at_input(dimensions, target)
+            || expansion.source_dimensions.len() != dimensions.len()
+            || expansion.source_dimensions[1..] != expansion.target_dimensions[1..]
+            || expansion.source_dimensions.last() != dimensions.last()
+            || !known_hidden(hidden(&expansion.source_dimensions))
             || width.is_some_and(|width| width != source)
             || expansion.activated_at_batch > cumulative_batches
             || expansion.activated_at_epoch > epoch
@@ -402,6 +495,10 @@ pub struct UniversalCheckpointMetadata {
         skip_serializing_if = "Vec::is_empty"
     )]
     pub input_expansions: Vec<UniversalInputExpansionActivation>,
+    /// Every additive hidden-width expansion, oldest first; empty for checkpoints at
+    /// their creation widths. Older binaries ignore the field and reject the widths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub width_expansions: Vec<UniversalWidthExpansionActivation>,
     /// Per-output-family looping focus lanes; absent on checkpoints that predate them.
     #[serde(default, skip_serializing_if = "FocusLaneState::is_empty")]
     pub focus_lanes: FocusLaneState,
@@ -524,8 +621,14 @@ impl UniversalCheckpointMetadata {
         Ok(true)
     }
 
+    /// Validate at the current input/output contract. Hidden widths other than
+    /// `UNIVERSAL_DIMS` are accepted only with a width-expansion chain leading to them.
     pub fn validate(&self, expected_dimensions: &[usize]) -> Result<(), UniversalCheckpointError> {
-        if expected_dimensions != UNIVERSAL_DIMS {
+        if expected_dimensions.len() != UNIVERSAL_DIMS.len()
+            || expected_dimensions.first() != UNIVERSAL_DIMS.first()
+            || expected_dimensions.last() != UNIVERSAL_DIMS.last()
+            || created_hidden(&self.width_expansions, expected_dimensions) != hidden(&UNIVERSAL_DIMS)
+        {
             return Err(UniversalCheckpointError::InvalidMetadata);
         }
         self.validate_shape(expected_dimensions)
@@ -602,8 +705,15 @@ impl UniversalCheckpointMetadata {
                     || activation.activated_at_batch > self.cumulative_batches
                     || activation.activated_at_epoch > self.epoch
             })
+            || !width_expansions_valid(
+                &self.width_expansions, expected_dimensions, self.cumulative_batches, self.epoch,
+            )
             || !input_expansions_valid(
-                &self.input_expansions, expected_dimensions, self.cumulative_batches, self.epoch,
+                &self.input_expansions,
+                expected_dimensions,
+                &self.width_expansions,
+                self.cumulative_batches,
+                self.epoch,
             )
             || self.data_replay.as_ref().is_some_and(|replay| {
                 replay.started_at_batch > self.cumulative_batches
@@ -616,6 +726,13 @@ impl UniversalCheckpointMetadata {
         {
             return Err(UniversalCheckpointError::InvalidMetadata);
         }
+        // The widths the set was created at: before its first input and width expansions.
+        let mut created = expected_dimensions.to_vec();
+        if let Some(expansion) = self.input_expansions.first() {
+            created[0] = expansion.source_dimensions[0];
+        }
+        let created_hidden = created_hidden(&self.width_expansions, expected_dimensions);
+        created[1..expected_dimensions.len() - 1].copy_from_slice(created_hidden);
         match (&self.migration, &self.parent_metadata, &self.fresh_init) {
             (Some(migration), Some(parent_metadata), None) => {
                 if migration.source_format_version != MULTIMODAL_CHECKPOINT_FORMAT_VERSION
@@ -640,10 +757,6 @@ impl UniversalCheckpointMetadata {
                 }
             }
             (None, None, Some(fresh)) => {
-                // A fresh set is created at the width its first expansion started from.
-                let created = self.input_expansions.first().map_or(expected_dimensions, |expansion| {
-                    expansion.source_dimensions.as_slice()
-                });
                 if created.first() == Some(&REQUEST_ONLY_INPUT_DIM)
                     || fresh.scheme != UNIVERSAL_FRESH_INIT_SCHEME
                     || fresh.expert_seeds != fresh_init_expert_seeds(fresh.seed)
@@ -875,6 +988,7 @@ pub fn migrate_v4_checkpoint(
         data_replay: None,
         noul_probability_activation: None,
         input_expansions: Vec::new(),
+        width_expansions: Vec::new(),
         focus_lanes: FocusLaneState::default(),
         expert_layer_alphas: None,
         byte_target_encoding: ByteTargetEncoding::Signed,
@@ -961,6 +1075,7 @@ pub(crate) fn fresh_initialization_for_dimensions(
         data_replay: None,
         noul_probability_activation: None,
         input_expansions: Vec::new(),
+        width_expansions: Vec::new(),
         focus_lanes: FocusLaneState::default(),
         expert_layer_alphas: None,
         byte_target_encoding: ByteTargetEncoding::Signed,
@@ -1120,25 +1235,29 @@ pub fn load_universal_checkpoint(
     load_checkpoint_for_dimensions(root, &UNIVERSAL_DIMS)
 }
 
+/// Load at `baseline_dimensions`' input/output widths and creation hidden widths. A
+/// narrower stored input width appends zero first-layer rows and input biases; stored
+/// hidden widths wider than the baseline are accepted only through a recorded
+/// width-expansion chain from the baseline, and are loaded as stored.
 fn load_checkpoint_for_dimensions(
     root: &Path,
-    current_dimensions: &[usize],
+    baseline_dimensions: &[usize],
 ) -> Result<LoadedUniversalCheckpoint, UniversalCheckpointError> {
     let metadata_path = root.join("checkpoint.json");
     let encoded = fs::read(&metadata_path).map_err(|error| io_error(&metadata_path, error))?;
     let mut metadata: UniversalCheckpointMetadata =
         serde_json::from_slice(&encoded).map_err(UniversalCheckpointError::Decode)?;
-    // Any recorded narrower input width loads by appending zero first-layer rows and
-    // input biases; every other dimension must match exactly.
     let stored_dimensions = metadata.dimensions.clone();
-    if stored_dimensions.len() != current_dimensions.len()
+    if stored_dimensions.len() != baseline_dimensions.len()
         || stored_dimensions.len() < 2
-        || stored_dimensions[1..] != current_dimensions[1..]
-        || stored_dimensions[0] > current_dimensions[0]
+        || stored_dimensions.last() != baseline_dimensions.last()
+        || stored_dimensions[0] > baseline_dimensions[0]
+        || created_hidden(&metadata.width_expansions, &stored_dimensions) != hidden(baseline_dimensions)
     {
         return Err(UniversalCheckpointError::InvalidMetadata);
     }
     metadata.validate_shape(&stored_dimensions)?;
+    let current_dimensions = &dimensions_at_input(&stored_dimensions, baseline_dimensions[0]);
     let target_layout = universal_input_layout(current_dimensions[0])
         .ok_or(UniversalCheckpointError::InvalidMetadata)?;
     let weights_path = root.join("pcn-weights.bin");
@@ -1326,6 +1445,7 @@ mod tests {
             data_replay: None,
             noul_probability_activation: None,
             input_expansions: Vec::new(),
+            width_expansions: Vec::new(),
             focus_lanes: FocusLaneState::default(),
             expert_layer_alphas: None,
             byte_target_encoding: ByteTargetEncoding::Signed,
@@ -2247,5 +2367,112 @@ mod tests {
         assert_eq!(partial.lanes["choice"].cursors["typed"].loops, 0);
         assert!(partial.lanes["choice"].history.is_empty());
         assert!(partial.config.is_none());
+    }
+
+    fn width_expansion(source: &[usize], target: &[usize], batch: u64, epoch: usize) -> UniversalWidthExpansionActivation {
+        UniversalWidthExpansionActivation {
+            scheme: UNIVERSAL_WIDTH_EXPANSION_SCHEME.to_owned(),
+            activated_at_batch: batch,
+            activated_at_epoch: epoch,
+            source_dimensions: source.to_vec(),
+            target_dimensions: target.to_vec(),
+            seed: 99,
+            expert_seeds: fresh_init_expert_seeds(99),
+            new_unit_scale: 0.3,
+            seeded_experts: "inherited".to_owned(),
+            source_root: "/source".to_owned(),
+            source_generation: "generation-e0-b0-1".to_owned(),
+        }
+    }
+
+    #[test]
+    fn width_expanded_checkpoint_loads_as_stored_with_exact_inherited_bits() {
+        let root = CheckpointDirectory::new();
+        let (mut metadata, [source, _]) = fresh_initialization_for_dimensions(
+            &SMALL_CURRENT_DIMS, 7, 0.3, NormalizationStats::identity(), 1_234,
+        ).unwrap();
+        metadata.cumulative_batches = 40;
+        metadata.epoch = 3;
+        let target = [SMALL_CURRENT_DIMS[0], 6, 9, SMALL_CURRENT_DIMS[3]];
+        let widened = crate::widen_pcn(&source, &target, 99, 0.3).unwrap();
+        let mut widened_metadata = metadata.clone();
+        widened_metadata.dimensions = target.to_vec();
+        widened_metadata.width_expansions.push(width_expansion(&SMALL_CURRENT_DIMS, &target, 40, 3));
+        save_validated_checkpoint(&root.0, &widened, &widened_metadata).unwrap();
+
+        let loaded = load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).unwrap();
+        assert_eq!(loaded.pcn.dims, target);
+        assert!(!loaded.input_capacity_upgraded());
+        assert_eq!(loaded.metadata, widened_metadata);
+        assert_eq!(parameter_bits(&loaded.pcn), parameter_bits(&widened));
+        for layer in 1..target.len() {
+            let old = loaded.pcn.w[layer].slice_axis(Axis(0), Slice::from(..SMALL_CURRENT_DIMS[layer - 1]));
+            let old = old.slice_axis(Axis(1), Slice::from(..SMALL_CURRENT_DIMS[layer]));
+            assert!(old.iter().zip(source.w[layer].iter()).all(|(a, b)| a.to_bits() == b.to_bits()));
+        }
+        // The public validator accepts only chains that start at the creation widths.
+        assert!(widened_metadata.validate(&target).is_err());
+        let mut full = widened_metadata.clone();
+        full.width_expansions[0].source_dimensions = UNIVERSAL_DIMS.to_vec();
+        full.width_expansions[0].target_dimensions = vec![UNIVERSAL_DIMS[0], 10_000, 9_216, UNIVERSAL_DIMS[3]];
+        full.dimensions.clone_from(&full.width_expansions[0].target_dimensions);
+        full.fresh_init.as_mut().unwrap().dimensions = UNIVERSAL_DIMS.to_vec();
+        assert!(full.validate(&full.dimensions.clone()).is_ok());
+        assert!(full.validate(&UNIVERSAL_DIMS).is_err());
+
+        // Widened widths without provenance, a broken chain, or a future activation are rejected.
+        let mut invalid = widened_metadata.clone();
+        invalid.width_expansions.clear();
+        fs::write(root.0.join("checkpoint.json"), serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).is_err());
+        let mut invalid = widened_metadata.clone();
+        invalid.width_expansions[0].source_dimensions[1] += 1;
+        fs::write(root.0.join("checkpoint.json"), serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).is_err());
+        let mut invalid = widened_metadata.clone();
+        invalid.width_expansions[0].target_dimensions[2] -= 1;
+        fs::write(root.0.join("checkpoint.json"), serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).is_err());
+        let mut invalid = widened_metadata.clone();
+        invalid.width_expansions[0].activated_at_batch = 41;
+        fs::write(root.0.join("checkpoint.json"), serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).is_err());
+        let mut invalid = widened_metadata.clone();
+        invalid.width_expansions[0].scheme = "tampered".to_owned();
+        fs::write(root.0.join("checkpoint.json"), serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).is_err());
+        // A narrower baseline than the chain's start is not this lineage.
+        fs::write(root.0.join("checkpoint.json"), serde_json::to_vec(&widened_metadata).unwrap()).unwrap();
+        assert!(load_checkpoint_for_dimensions(&root.0, &[SMALL_CURRENT_DIMS[0], 2, 4, SMALL_CURRENT_DIMS[3]]).is_err());
+        assert!(load_checkpoint_for_dimensions(&root.0, &SMALL_CURRENT_DIMS).is_ok());
+
+        // A later input expansion on the widened lineage keeps validating.
+        let request_only = UNIVERSAL_INPUT_LAYOUTS[1];
+        let mut archived = widened_metadata.clone();
+        let archived_dims = dimensions_at_input(&target, request_only.input_dim);
+        archived.dimensions.clone_from(&archived_dims);
+        archived.feature_contract = request_only.feature_contract.to_owned();
+        archived.input_transform = request_only.input_transform.to_owned();
+        archived.fresh_init.as_mut().unwrap().dimensions = dimensions_at_input(&SMALL_CURRENT_DIMS, request_only.input_dim);
+        archived.width_expansions[0].source_dimensions = dimensions_at_input(&SMALL_CURRENT_DIMS, request_only.input_dim);
+        archived.width_expansions[0].target_dimensions.clone_from(&archived_dims);
+        let mut weights = source.w.clone();
+        weights[1] = source.w[1].slice_axis(Axis(0), Slice::from(..request_only.input_dim)).to_owned();
+        let mut biases = source.b.clone();
+        biases[0] = source.b[0].slice_axis(Axis(0), Slice::from(..request_only.input_dim)).to_owned();
+        let narrow = PCN::from_parameters(
+            archived.fresh_init.as_ref().unwrap().dimensions.clone(), weights, biases, Box::new(TanhActivation),
+        ).unwrap();
+        let archived_pcn = crate::widen_pcn(&narrow, &archived_dims, 99, 0.3).unwrap();
+        let archived_root = CheckpointDirectory::new();
+        save_validated_checkpoint(&archived_root.0, &archived_pcn, &archived).unwrap();
+        let upgraded = load_checkpoint_for_dimensions(&archived_root.0, &SMALL_CURRENT_DIMS).unwrap();
+        assert!(upgraded.input_capacity_upgraded());
+        assert_eq!(upgraded.pcn.dims, target);
+        assert_eq!(upgraded.metadata.input_expansions.len(), 1);
+        assert_eq!(upgraded.metadata.input_expansions[0].source_dimensions, archived_dims);
+        let committed = CheckpointDirectory::new();
+        save_validated_checkpoint(&committed.0, &upgraded.pcn, &upgraded.metadata).unwrap();
+        assert_eq!(load_checkpoint_for_dimensions(&committed.0, &SMALL_CURRENT_DIMS).unwrap().pcn.dims, target);
     }
 }

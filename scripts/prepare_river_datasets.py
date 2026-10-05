@@ -199,7 +199,7 @@ def serialize(identifier: str, row: dict[str, Any]) -> str | None:
         )
     if identifier == "openassistant-oasst2-v1":
         return record(
-            "conversation-response",
+            "conversation-ranked",
             [("prompt", row.get("prompt")), ("response", row.get("response"))],
         )
     if identifier == "rajpurkar-squad-v2-v1":

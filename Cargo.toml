@@ -70,6 +70,10 @@ name = "river-pcn-expand-universal-experts"
 path = "src/bin/expand_universal_experts.rs"
 
 [[bin]]
+name = "river-pcn-widen-universal"
+path = "src/bin/widen_universal.rs"
+
+[[bin]]
 name = "river-pcn-repair-universal"
 path = "src/bin/repair_universal.rs"
 

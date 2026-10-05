@@ -11,12 +11,13 @@ use crate::{
     fresh_universal_initialization, load_universal_checkpoint, save_universal_checkpoint,
     LoadedUniversalCheckpoint, NormalizationStats, SurpriseState,
     UniversalCheckpointError, UniversalCheckpointMetadata, UniversalInputExpansionActivation,
-    UniversalInputLayout, UniversalNoulProbabilityActivation,
+    UniversalInputLayout, UniversalNoulProbabilityActivation, UniversalWidthExpansionActivation,
     HISTORICAL_NOUL_PROBABILITY_CONTRACT, PCN, UNIVERSAL_DIMS, UNIVERSAL_INPUT_DIM,
     UNIVERSAL_INPUT_LAYOUTS, UNIVERSAL_NOUL_PROBABILITY_CONTRACT,
 };
 use crate::universal_checkpoint::{
-    deserialize_input_expansions, dimensions_at_input, input_expansions_valid, parameter_count,
+    created_hidden, deserialize_input_expansions, dimensions_at_input, input_expansions_valid,
+    parameter_count, width_expansions_valid,
 };
 
 pub const UNIVERSAL_EXPERT_SET_SCHEMA: &str = "river-universal-expert-set-v1";
@@ -44,7 +45,7 @@ pub struct UniversalExpertDescriptor {
     pub route: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UniversalExpertSetManifest {
     pub schema: String,
     pub expert_count: usize,
@@ -71,6 +72,12 @@ pub struct UniversalExpertSetManifest {
     pub input_feature_contract: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_transform: Option<String>,
+    /// Stored layer widths of both experts; absent on manifests at `UNIVERSAL_DIMS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dimensions: Option<Vec<usize>>,
+    /// Every additive hidden-width expansion committed with this generation, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub width_expansions: Vec<UniversalWidthExpansionActivation>,
     pub experts: [UniversalExpertDescriptor; 2],
 }
 
@@ -161,10 +168,16 @@ fn descriptors(generation: &str) -> [UniversalExpertDescriptor; 2] {
     ]
 }
 
+/// The stored layer widths of a manifest: `UNIVERSAL_DIMS` unless it records others.
+fn manifest_dimensions(manifest: &UniversalExpertSetManifest) -> Vec<usize> {
+    manifest.dimensions.clone().unwrap_or_else(|| UNIVERSAL_DIMS.to_vec())
+}
+
 /// The recorded input layout both experts are stored at, from the manifest's capacity.
 fn manifest_input_layout(manifest: &UniversalExpertSetManifest) -> Option<&'static UniversalInputLayout> {
+    let dimensions = manifest_dimensions(manifest);
     UNIVERSAL_INPUT_LAYOUTS.iter().find(|layout| {
-        let parameters = parameter_count(&dimensions_at_input(&UNIVERSAL_DIMS, layout.input_dim));
+        let parameters = parameter_count(&dimensions_at_input(&dimensions, layout.input_dim));
         manifest.parameters_per_expert == parameters && manifest.total_parameters == parameters * 2
     })
 }
@@ -173,8 +186,18 @@ fn validate_manifest(manifest: &UniversalExpertSetManifest) -> bool {
     let Some(layout) = manifest_input_layout(manifest) else {
         return false;
     };
+    let dimensions = dimensions_at_input(&manifest_dimensions(manifest), layout.input_dim);
     manifest.schema == UNIVERSAL_EXPERT_SET_SCHEMA
         && manifest.expert_count == 2
+        && dimensions.len() == UNIVERSAL_DIMS.len()
+        && dimensions.last() == UNIVERSAL_DIMS.last()
+        && created_hidden(&manifest.width_expansions, &dimensions) == &UNIVERSAL_DIMS[1..UNIVERSAL_DIMS.len() - 1]
+        && width_expansions_valid(
+            &manifest.width_expansions,
+            &dimensions,
+            manifest.cumulative_batches,
+            manifest.epoch,
+        )
         && manifest.input_feature_contract.as_deref().is_none_or(|contract| contract == layout.feature_contract)
         && manifest.input_transform.as_deref().is_none_or(|transform| transform == layout.input_transform)
         && !manifest.source_checkpoint.is_empty()
@@ -186,7 +209,8 @@ fn validate_manifest(manifest: &UniversalExpertSetManifest) -> bool {
         })
         && input_expansions_valid(
             &manifest.input_expansions,
-            &dimensions_at_input(&UNIVERSAL_DIMS, layout.input_dim),
+            &dimensions,
+            &manifest.width_expansions,
             manifest.cumulative_batches,
             manifest.epoch,
         )
@@ -256,6 +280,8 @@ pub fn load_universal_expert_set(
         || manifest.epoch != inherited.metadata.epoch
         || manifest.cumulative_batches != inherited.metadata.cumulative_batches
         || manifest.noul_probability_activation != inherited.metadata.noul_probability_activation
+        || manifest.width_expansions != inherited.metadata.width_expansions
+        || inherited.pcn.dims != dimensions_at_input(&manifest_dimensions(&manifest), UNIVERSAL_INPUT_DIM)
         || !manifest_capacity_matches(
             &manifest,
             inherited.stored_input_dim,
@@ -408,7 +434,7 @@ pub fn activate_generation(
     {
         return Err(UniversalExpertSetError::InvalidManifest);
     }
-    let dimensions = dimensions_at_input(&UNIVERSAL_DIMS, inherited.stored_input_dim);
+    let dimensions = dimensions_at_input(&inherited.pcn.dims, inherited.stored_input_dim);
     let parameters = parameter_count(&dimensions);
     let layout = crate::universal_input_layout(inherited.stored_input_dim)
         .ok_or(UniversalExpertSetError::InvalidManifest)?;
@@ -431,6 +457,10 @@ pub fn activate_generation(
         input_expansions,
         input_feature_contract: Some(layout.feature_contract.to_owned()),
         input_transform: Some(layout.input_transform.to_owned()),
+        // Manifests at the creation widths keep their historical form.
+        dimensions: (dimensions != dimensions_at_input(&UNIVERSAL_DIMS, inherited.stored_input_dim))
+            .then(|| dimensions.clone()),
+        width_expansions: inherited.metadata.width_expansions.clone(),
         experts,
     };
     if !validate_manifest(&manifest) {
@@ -677,6 +707,8 @@ mod tests {
             input_expansions: Vec::new(),
             input_feature_contract: None,
             input_transform: None,
+            dimensions: None,
+            width_expansions: Vec::new(),
             experts: descriptors(generation),
         }
     }

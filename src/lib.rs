@@ -31,6 +31,7 @@ pub mod universal;
 pub mod universal_checkpoint;
 pub mod universal_corpus;
 pub mod universal_experts;
+pub mod universal_widen;
 
 use serde::{Deserialize, Serialize};
 
@@ -124,11 +125,11 @@ pub use universal_checkpoint::{
     UniversalBytePredictionState, UniversalByteTargetActivation, UniversalCheckpointError, UniversalCheckpointMetadata,
     UniversalDataReplayState, UniversalMigrationProvenance, UniversalFreshInitProvenance,
     UniversalInputExpansionActivation, UniversalInputLayout, UniversalNoulProbabilityActivation,
-    UniversalOutputLayout, UniversalTaskTrainingState,
+    UniversalOutputLayout, UniversalTaskTrainingState, UniversalWidthExpansionActivation,
     HISTORICAL_NOUL_PROBABILITY_CONTRACT, UNIVERSAL_BYTE_PREDICTION_SCHEMA, UNIVERSAL_CHECKPOINT_FORMAT_VERSION,
     UNIVERSAL_FEATURE_CONTRACT, UNIVERSAL_FRESH_INIT_NORMALIZATION_SOURCE,
     UNIVERSAL_FRESH_INIT_SCHEME, UNIVERSAL_INPUT_LAYOUTS, UNIVERSAL_INPUT_TRANSFORM,
-    UNIVERSAL_NOUL_PROBABILITY_CONTRACT, UNIVERSAL_OUTPUT_CONTRACT,
+    UNIVERSAL_NOUL_PROBABILITY_CONTRACT, UNIVERSAL_OUTPUT_CONTRACT, UNIVERSAL_WIDTH_EXPANSION_SCHEME,
 };
 pub use universal_corpus::{
     adapter_fingerprint_prefix, compatible_task_exposure, image_language_example,
@@ -149,6 +150,9 @@ pub use universal_experts::{
     RollbackRecord, RunHealthRecord, UniversalExpertDescriptor, UniversalExpertRole,
     UniversalExpertSetError, UniversalExpertSetManifest, HEALTH_FILE, RUN_HEALTH_SCHEMA,
     UNIVERSAL_EXPERT_SET_SCHEMA,
+};
+pub use universal_widen::{
+    widen_pcn, widen_universal_root, SeededExperts, UniversalWidenError, WidenReport,
 };
 
 pub const PRODUCTION_DIMS: [usize; 4] = [INPUT_DIM, 9_216, 9_216, OUTPUT_DIM];
